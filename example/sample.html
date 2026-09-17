@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月次売上報告書</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="report-content">
+    <h1>月次売上報告書</h1>
+    <p>対象期間: 2026年8月度。この段落や下記の表・引用は自由に書き換えて記入できます。</p>
+
+    <blockquote>本資料は社外秘です。取り扱いにご注意ください。</blockquote>
+
+    <h2>基本情報(単票形式)</h2>
+    <table>
+      <tr><th>部署名</th><td>営業部</td><th>作成者</th><td>山田太郎</td></tr>
+      <tr><th>作成日</th><td>2026-09-01</td><th>承認者</th><td>佐藤花子</td></tr>
+    </table>
+
+    <h2>商品別売上(一覧表形式)</h2>
+    <table>
+      <tr><th>商品名</th><th>数量</th><th>金額</th></tr>
+      <tr><th>商品A</th><td>10</td><td>100,000</td></tr>
+      <tr><th>商品B</th><td>5</td><td>50,000</td></tr>
+    </table>
+  </div>
+
+  <!-- PDF保存に使用するライブラリ(オフラインの場合はPDF保存のみエラーになります) -->
+  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
+  <script src="report-engine.js"></script>
+</body>
+</html>
