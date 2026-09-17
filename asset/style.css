@@ -1,0 +1,77 @@
+/* 帳票フォームの見た目(枠側のCSS)。
+   メニューバー自体のCSSは report-engine.js が動的に埋め込むため、
+   ここには「帳票の中身」のスタイルだけを書く。 */
+
+body {
+  margin: 0;
+  background: #eef1f5;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+  color: #1f2937;
+}
+
+#report-content {
+  max-width: 800px;
+  margin: 32px auto;
+  padding: 40px 48px;
+  background: #ffffff;
+  border: 1px solid #d7dce3;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  line-height: 1.7;
+}
+
+#report-content:focus {
+  outline: 2px solid #3b6fd6;
+  outline-offset: 4px;
+}
+
+#report-content h1 {
+  font-size: 22px;
+  margin: 0 0 20px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #20293a;
+}
+
+#report-content h2 {
+  font-size: 17px;
+  margin: 28px 0 12px;
+}
+
+#report-content p {
+  margin: 0 0 14px;
+}
+
+#report-content blockquote {
+  margin: 16px 0;
+  padding: 10px 16px;
+  border-left: 4px solid #9aa6b8;
+  background: #f5f7fa;
+  color: #4b5563;
+}
+
+#report-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+}
+
+#report-content th,
+#report-content td {
+  border: 1px solid #d7dce3;
+  padding: 8px 12px;
+  font-size: 14px;
+  text-align: left;
+}
+
+#report-content th {
+  background: #f0f3f8;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#report-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 12px 0;
+}
