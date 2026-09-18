@@ -14,6 +14,10 @@
  *      後でそのファイルを開けば編集を再開できる。それ以外の3形式は完成品としての書き出し。
  *   5. 「画像を挿入」ボタン、またはカーソル位置への貼り付け(Ctrl+V)で画像を追加できる。
  *      画像はbase64のdata URLとして埋め込まれるため、追加ファイル無しで自己完結する。
+ *   6. 表のセル内でTabキーを押すと次のセルへ移動。最終行の最終セルでTabを押すと
+ *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
+ *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
+ *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
  *
  * 表 → Markdown 変換ルール:
  *   ・1行目の全セルがTHの場合 = 「一覧表形式」
@@ -88,6 +92,99 @@
   // theadやtbodyの有無に関わらず、tableの下のtrを出現順にすべて取得する
   function getDirectRows(table) {
     return Array.from(table.querySelectorAll('tr'));
+  }
+
+  // 表を「一覧表形式」(1行目が全てTH)か「単票形式」かに応じてクラス分けする。
+  // CSSでの見た目の出し分け(vertical-align/背景色など)に使う。
+  // Markdown変換のisListFormat判定とは独立した処理(見た目専用)。
+  function classifyTables(root) {
+    Array.from(root.querySelectorAll('table')).forEach(function (table) {
+      var rows = getDirectRows(table);
+      if (rows.length === 0) return;
+      var headerCells = Array.from(rows[0].cells);
+      var isList = headerCells.length > 0 && headerCells.every(function (c) {
+        return c.tagName.toLowerCase() === 'th';
+      });
+      table.classList.remove('report-table-list', 'report-table-form');
+      table.classList.add(isList ? 'report-table-list' : 'report-table-form');
+    });
+  }
+
+  // ==============================================================
+  // 表のTabキー操作(次のセルへ移動 / 最終行の最終セルで行を追加)
+  // ==============================================================
+
+  function getCurrentCell(root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.anchorNode) return null;
+    var node = sel.anchorNode;
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && /^(TH|TD)$/.test(node.tagName)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function placeCaretAtStart(cell) {
+    var range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(true);
+    var sel = global.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // 最終行と同じ列数の新しい行を作る。
+  // 一覧表形式は常に「先頭TH + 残りTD」(1行目の見出しと同じ列数)、
+  // 単票形式は今のいた行のセル種別(TH/TD)パターンをそのまま踏襲する。
+  function buildNewRow(table, rows, currentRow) {
+    var headerCells = Array.from(rows[0].cells);
+    var isListFormat = headerCells.length > 0 && headerCells.every(function (c) {
+      return c.tagName.toLowerCase() === 'th';
+    });
+    var newRow = document.createElement('tr');
+    if (isListFormat) {
+      headerCells.forEach(function (_, i) {
+        newRow.appendChild(document.createElement(i === 0 ? 'th' : 'td'));
+      });
+    } else {
+      Array.from(currentRow.cells).forEach(function (c) {
+        newRow.appendChild(document.createElement(c.tagName.toLowerCase()));
+      });
+    }
+    return newRow;
+  }
+
+  function handleTabInTable(e, root) {
+    var cell = getCurrentCell(root);
+    if (!cell) return false;
+    var row = cell.parentNode;
+    var table = cell.closest('table');
+    if (!table) return false;
+
+    var cellsInRow = Array.from(row.cells);
+    var rows = getDirectRows(table);
+    var cellIndex = cellsInRow.indexOf(cell);
+    var rowIndex = rows.indexOf(row);
+    var isLastCellInRow = cellIndex === cellsInRow.length - 1;
+    var isLastRow = rowIndex === rows.length - 1;
+
+    e.preventDefault();
+
+    if (!isLastCellInRow) {
+      placeCaretAtStart(cellsInRow[cellIndex + 1]);
+      return true;
+    }
+    if (!isLastRow) {
+      var nextRowCells = Array.from(rows[rowIndex + 1].cells);
+      if (nextRowCells.length) placeCaretAtStart(nextRowCells[0]);
+      return true;
+    }
+    // 最終行の最終セル → 新しい行を追加
+    var newRow = buildNewRow(table, rows, row);
+    row.parentNode.appendChild(newRow);
+    if (newRow.cells.length) placeCaretAtStart(newRow.cells[0]);
+    return true;
   }
 
   function tableToMarkdown(table, warnings) {
@@ -485,6 +582,7 @@
       showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。', 'error');
       return;
     }
+    classifyTables(root);
     var base = getBaseFilename();
 
     if (format === 'markdown') {
@@ -521,6 +619,7 @@
     var root = document.getElementById(CONTAINER_ID);
     if (root) {
       root.setAttribute('contenteditable', 'true');
+      classifyTables(root);
     } else {
       showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。id="' + CONTAINER_ID + '" の要素を用意してください。', 'error');
     }
@@ -530,6 +629,10 @@
       if ((e.ctrlKey || e.metaKey) && key === 's') {
         e.preventDefault();
         openFormatChooser();
+        return;
+      }
+      if (e.key === 'Tab' && !e.shiftKey && root) {
+        handleTabInTable(e, root);
       }
     });
 
@@ -563,6 +666,8 @@
   ReportEngine.tableToMarkdown = tableToMarkdown;
   ReportEngine.containerToStandaloneHTML = containerToStandaloneHTML;
   ReportEngine.buildDraftHTML = buildDraftHTML;
+  ReportEngine.classifyTables = classifyTables;
+  ReportEngine.handleTabInTable = handleTabInTable;
   ReportEngine.performSave = performSave;
   ReportEngine.openFormatChooser = openFormatChooser;
   ReportEngine.readFileAsDataURL = readFileAsDataURL;
