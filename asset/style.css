@@ -69,6 +69,16 @@ body {
   white-space: nowrap;
 }
 
+/* 一覧表形式(1行目が全てTHの表。report-engine.jsが自動でこのクラスを付与) */
+#report-content table.report-table-list th,
+#report-content table.report-table-list td {
+  vertical-align: top;
+}
+
+#report-content table.report-table-list th {
+  background: #e9e9e9;
+}
+
 #report-content img {
   max-width: 100%;
   height: auto;
