@@ -365,6 +365,135 @@ test('保存フローで一次保存を選ぶと _下書き.html で保存され
 });
 
 // ------------------------------------------------------------------
+// 9. 表のクラス分け(CSS用)・Tabキー操作
+// ------------------------------------------------------------------
+
+function setCaretIn(dom, cell) {
+  const range = dom.window.document.createRange();
+  range.selectNodeContents(cell);
+  range.collapse(true);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function fakeTabEvent() {
+  let prevented = false;
+  return { key: 'Tab', shiftKey: false, preventDefault: () => { prevented = true; }, get defaultPrevented() { return prevented; } };
+}
+
+test('一覧表形式の表にreport-table-list、単票形式の表にreport-table-formクラスが付く', async () => {
+  const html = '<div id="report-content">' +
+    '<table id="t1"><tr><th>商品名</th><th>数量</th></tr><tr><th>商品A</th><td>1</td></tr></table>' +
+    '<table id="t2"><tr><th>氏名</th><td>山田</td></tr></table>' +
+    '</div>';
+  const dom = await makeEnv(html);
+  const t1 = dom.window.document.getElementById('t1');
+  const t2 = dom.window.document.getElementById('t2');
+  assert.ok(t1.classList.contains('report-table-list'), '一覧表形式にreport-table-listが付いていない');
+  assert.ok(t2.classList.contains('report-table-form'), '単票形式にreport-table-formが付いていない');
+});
+
+test('Tab: 行の途中のセルでは次のセルへ移動する(行は追加されない)', async () => {
+  const html = '<div id="report-content"><table><tr><th>A</th><th>B</th><th>C</th></tr></table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+  const cells = table.rows[0].cells;
+
+  setCaretIn(dom, cells[0]);
+  const ev = fakeTabEvent();
+  dom.window.ReportEngine.handleTabInTable(ev, root);
+
+  assert.ok(ev.defaultPrevented, 'preventDefaultが呼ばれていない');
+  assert.strictEqual(table.rows.length, 1, '行数が変わってしまっている');
+  const sel = dom.window.getSelection();
+  assert.ok(cells[1].contains(sel.anchorNode), 'カーソルが次のセルに移動していない');
+});
+
+test('Tab: 行の最後のセルでは(最終行でなければ)次の行の先頭セルへ移動する', async () => {
+  const html = '<div id="report-content"><table>' +
+    '<tr><th>A</th><th>B</th></tr>' +
+    '<tr><th>C</th><td>D</td></tr>' +
+    '</table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+
+  setCaretIn(dom, table.rows[0].cells[1]); // 1行目・最後のセル
+  dom.window.ReportEngine.handleTabInTable(fakeTabEvent(), root);
+
+  assert.strictEqual(table.rows.length, 2, '行が追加されてしまっている(最終行ではないため追加すべきでない)');
+  const sel = dom.window.getSelection();
+  assert.ok(table.rows[1].cells[0].contains(sel.anchorNode), 'カーソルが次の行の先頭セルに移動していない');
+});
+
+test('Tab: 一覧表形式の最終行・最終セルでは「TH+TD...TD」の新しい行が追加される', async () => {
+  const html = '<div id="report-content"><table>' +
+    '<tr><th>商品名</th><th>数量</th><th>金額</th></tr>' +
+    '<tr><th>商品A</th><td>10</td><td>100</td></tr>' +
+    '</table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+
+  setCaretIn(dom, table.rows[1].cells[2]); // 最終行・最終セル
+  dom.window.ReportEngine.handleTabInTable(fakeTabEvent(), root);
+
+  assert.strictEqual(table.rows.length, 3, '新しい行が追加されていない');
+  const newRow = table.rows[2];
+  const tags = Array.from(newRow.cells).map((c) => c.tagName);
+  assert.deepStrictEqual(tags, ['TH', 'TD', 'TD'], '新しい行のセル構成がTH+TD+TDになっていない: ' + tags);
+  const sel = dom.window.getSelection();
+  assert.ok(newRow.cells[0].contains(sel.anchorNode), 'カーソルが新しい行の先頭セルに移動していない');
+});
+
+test('Tab: 見出し行しか無い一覧表形式でも、新規行は(見出し行の複製ではなく)TH+TD...TDになる', async () => {
+  const html = '<div id="report-content"><table><tr><th>商品名</th><th>数量</th></tr></table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+
+  setCaretIn(dom, table.rows[0].cells[1]); // 見出し行しかない状態の最終セル
+  dom.window.ReportEngine.handleTabInTable(fakeTabEvent(), root);
+
+  assert.strictEqual(table.rows.length, 2, '新しい行が追加されていない');
+  const tags = Array.from(table.rows[1].cells).map((c) => c.tagName);
+  assert.deepStrictEqual(tags, ['TH', 'TD'], '見出し行がそのまま複製されてしまっている(TH+THはNG): ' + tags);
+});
+
+test('Tab: 単票形式の最終行・最終セルでは、その行のセル種別パターンを踏襲した新しい行が追加される', async () => {
+  const html = '<div id="report-content"><table>' +
+    '<tr><th>部署名</th><td>営業部</td><th>作成者</th><td>山田太郎</td></tr>' +
+    '</table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+
+  setCaretIn(dom, table.rows[0].cells[3]); // 最終行・最終セル
+  dom.window.ReportEngine.handleTabInTable(fakeTabEvent(), root);
+
+  assert.strictEqual(table.rows.length, 2, '新しい行が追加されていない');
+  const tags = Array.from(table.rows[1].cells).map((c) => c.tagName);
+  assert.deepStrictEqual(tags, ['TH', 'TD', 'TH', 'TD'], '単票形式の新規行がTH/TDパターンを踏襲していない: ' + tags);
+});
+
+test('Tab: 表のセル外にカーソルがある場合は何もしない', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>タイトル</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  setCaretIn(dom, root.querySelector('h1'));
+  const handled = dom.window.ReportEngine.handleTabInTable(fakeTabEvent(), root);
+  assert.strictEqual(handled, false, '表のセル外なのに処理してしまっている');
+});
+
+test('style.cssに一覧表形式用のvertical-align:topとTH背景色ルールが含まれる', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'build', 'style.css'), 'utf8');
+  assert.ok(css.includes('report-table-list'), 'report-table-listクラスのCSSが無い');
+  assert.ok(/report-table-list[\s\S]{0,80}vertical-align:\s*top/.test(css), 'vertical-align:topが設定されていない');
+  assert.ok(/report-table-list th\s*\{[^}]*background/.test(css), 'THの背景色ルールが無い');
+});
+
+// ------------------------------------------------------------------
 (async () => {
   for (const { name, fn } of tests) {
     try {
