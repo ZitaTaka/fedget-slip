@@ -351,7 +351,7 @@ test('一次保存はメニューバー自体(report-engine-bar)を二重生成�
   assert.ok(draftHtml.includes('.report-engine-bar'), 'メニューバー用CSS自体は残っているべき(再度開いたときの見た目のため)');
 });
 
-test('保存フローで一次保存を選ぶと _下書き.html で保存される', async () => {
+test('保存フローで一次保存を選ぶと wip_(ファイル名).html で保存される', async () => {
   const dom = await makeEnv('<div id="report-content"><h1>報告書</h1></div>');
   let called = null;
   dom.window.ReportEngine.downloadBlob = (content, filename, mime) => { called = { content, filename, mime }; };
@@ -359,7 +359,7 @@ test('保存フローで一次保存を選ぶと _下書き.html で保存され
   dom.window.ReportEngine.performSave('draft');
 
   assert.ok(called, 'downloadBlobが呼ばれていない');
-  assert.strictEqual(called.filename, '報告書_下書き.html');
+  assert.strictEqual(called.filename, 'wip_報告書.html');
   assert.strictEqual(called.mime, 'text/html');
   assert.ok(/\<script[\s>]/.test(called.content), '一次保存でscriptタグが失われている');
 });
@@ -491,6 +491,373 @@ test('style.cssに一覧表形式用のvertical-align:topとTH背景色ルール
   assert.ok(css.includes('report-table-list'), 'report-table-listクラスのCSSが無い');
   assert.ok(/report-table-list[\s\S]{0,80}vertical-align:\s*top/.test(css), 'vertical-align:topが設定されていない');
   assert.ok(/report-table-list th\s*\{[^}]*background/.test(css), 'THの背景色ルールが無い');
+});
+
+// ------------------------------------------------------------------
+// 10. ファイル添付(画像以外の任意ファイル)
+// ------------------------------------------------------------------
+test('handleAttachmentFileで添付チップ(a.report-attachment)が挿入される', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>t</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  dom.window.document.execCommand = (cmd, ui, value) => {
+    if (cmd === 'insertHTML') {
+      const div = dom.window.document.createElement('div');
+      div.innerHTML = value;
+      while (div.firstChild) root.appendChild(div.firstChild);
+    }
+    return true;
+  };
+
+  const file = new dom.window.File(['hello world'], '見積書.pdf', { type: 'application/pdf' });
+  await dom.window.ReportEngine.handleAttachmentFile(file);
+
+  const a = root.querySelector('a.report-attachment');
+  assert.ok(a, '添付チップが挿入されていない');
+  assert.strictEqual(a.getAttribute('download'), '見積書.pdf', 'download属性のファイル名が正しくない');
+  assert.ok(a.getAttribute('href').startsWith('data:application/pdf;base64,'), 'hrefがdata URLになっていない: ' + a.getAttribute('href'));
+  assert.ok(a.textContent.includes('見積書.pdf'), 'チップの表示テキストにファイル名が含まれていない');
+  assert.strictEqual(a.getAttribute('contenteditable'), 'false', 'チップがcontenteditable=falseになっていない');
+});
+
+test('添付チップがMarkdownの [ラベル](href) 形式に変換される', async () => {
+  const dom = await makeEnv(
+    '<div id="report-content"><p><a class="report-attachment" href="data:application/pdf;base64,AAA" download="a.pdf">📎 a.pdf (1.0 KB)</a></p></div>'
+  );
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '[📎 a.pdf (1.0 KB)](data:application/pdf;base64,AAA)');
+});
+
+test('大きい添付ファイルでは警告、小さいファイルでは警告が出ない', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>t</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  dom.window.document.execCommand = (cmd, ui, value) => {
+    if (cmd === 'insertHTML') {
+      const div = dom.window.document.createElement('div');
+      div.innerHTML = value;
+      while (div.firstChild) root.appendChild(div.firstChild);
+    }
+    return true;
+  };
+
+  const small = new dom.window.File(['x'], 'small.txt', { type: 'text/plain' });
+  await dom.window.ReportEngine.handleAttachmentFile(small);
+  let msg = dom.window.document.querySelector('.report-engine-msg');
+  assert.strictEqual(msg.textContent, '', '小さいファイルなのに警告が出ている: ' + msg.textContent);
+
+  const bigContent = 'a'.repeat(6 * 1024 * 1024); // 6MB > 5MBしきい値
+  const big = new dom.window.File([bigContent], 'big.zip', { type: 'application/zip' });
+  await dom.window.ReportEngine.handleAttachmentFile(big);
+  msg = dom.window.document.querySelector('.report-engine-msg');
+  assert.ok(msg.textContent.includes('big.zip'), '大きいファイルの警告が出ていない: ' + msg.textContent);
+});
+
+test('メニューバーに「ファイルを添付」ボタンと画像制限の無いファイル選択inputがある', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>t</h1></div>');
+  const buttons = Array.from(dom.window.document.querySelectorAll('.report-engine-bar button.insert-img'));
+  const attachBtn = buttons.find((b) => b.textContent === 'ファイルを添付');
+  assert.ok(attachBtn, '「ファイルを添付」ボタンが無い');
+  const inputs = Array.from(dom.window.document.querySelectorAll('.report-engine-bar input[type="file"]'));
+  assert.strictEqual(inputs.length, 2, '画像用・添付用の2つのfile inputがあるべき');
+  assert.ok(inputs.some((i) => i.accept === ''), '添付用inputはaccept制限が無いはず');
+});
+
+test('humanFileSizeが妥当な単位で整形する', async () => {
+  const dom = await makeEnv('<div id="report-content"></div>');
+  const f = dom.window.ReportEngine.humanFileSize;
+  assert.strictEqual(f(500), '500 B');
+  assert.strictEqual(f(2048), '2.0 KB');
+  assert.strictEqual(f(5 * 1024 * 1024), '5.0 MB');
+});
+
+// ------------------------------------------------------------------
+// 11. 選択範囲への書式ショートカット(Ctrl+B/I/L, Ctrl+ +/-, Ctrl+K)
+// ------------------------------------------------------------------
+
+function selectTextIn(dom, textNode, start, end) {
+  const range = dom.window.document.createRange();
+  range.setStart(textNode, start);
+  range.setEnd(textNode, end);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+test('Ctrl+Shift+B/I/UはそれぞれexecCommand(bold/italic/underline)を呼ぶ', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const calls = [];
+  dom.window.document.execCommand = (cmd) => { calls.push(cmd); return true; };
+
+  const p = dom.window.document.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+
+  ['b', 'y', 'u'].forEach((k) => {
+    const ev = new dom.window.KeyboardEvent('keydown', { key: k, ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    dom.window.document.dispatchEvent(ev);
+  });
+
+  assert.deepStrictEqual(calls, ['bold', 'italic', 'underline']);
+});
+
+test('Shiftを押していないCtrl+Bは何もしない(Ctrl+Shift+Bのみ有効)', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const calls = [];
+  dom.window.document.execCommand = (cmd) => { calls.push(cmd); return true; };
+  const p = dom.window.document.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+
+  const ev = new dom.window.KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(ev);
+
+  assert.deepStrictEqual(calls, []);
+});
+
+test('選択範囲が無い状態でCtrl+Shift+ +を押しても文字サイズは変更されない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const before = dom.window.document.getElementById('report-content').innerHTML;
+  const ev = new dom.window.KeyboardEvent('keydown', { key: '+', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(ev);
+  const after = dom.window.document.getElementById('report-content').innerHTML;
+  assert.strictEqual(before, after, '選択が無いのにDOMが変わってしまっている');
+});
+
+test('adjustFontSizeで選択範囲が既定値+2ptのspanに包まれ、続けて押すとさらに+2ptされる', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello world</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+
+  selectTextIn(dom, p.firstChild, 0, 5); // "hello"
+  dom.window.ReportEngine.adjustFontSize(root, 2);
+  let span = p.querySelector('span');
+  assert.ok(span, 'spanが挿入されていない');
+  assert.strictEqual(span.style.fontSize, '14pt', '既定12pt+2ptになっていない: ' + span.style.fontSize);
+
+  // 選択範囲はadjustFontSize内で新しいspanの中身に更新されているはずなので、続けて押す
+  dom.window.ReportEngine.adjustFontSize(root, 2);
+  span = p.querySelector('span[style*="16pt"]');
+  assert.ok(span, '2回目の適用で16ptになっていない: ' + p.innerHTML);
+});
+
+test('adjustFontSizeは最小値6ptを下回らない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+  for (let i = 0; i < 10; i++) dom.window.ReportEngine.adjustFontSize(root, -2);
+  const span = p.querySelector('span');
+  assert.strictEqual(span.style.fontSize, '6pt');
+});
+
+test('Ctrl+K: テキスト選択中はダイアログにURL欄のみ表示され、OKでcreateLinkが呼ばれる', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+
+  let called = null;
+  dom.window.document.execCommand = (cmd, ui, value) => { called = { cmd, value }; return true; };
+
+  dom.window.ReportEngine.openLinkDialog(root);
+  const modal = dom.window.document.querySelector('.report-engine-modal');
+  assert.ok(modal, 'ダイアログが開いていない');
+  assert.strictEqual(modal.querySelectorAll('input[type="text"]').length, 1, '選択中はURL欄のみのはず');
+
+  const urlInput = modal.querySelector('.report-engine-input');
+  urlInput.value = 'https://example.com/';
+  modal.querySelectorAll('.choices button')[0].click();
+
+  assert.ok(called, 'execCommandが呼ばれていない');
+  assert.strictEqual(called.cmd, 'createLink');
+  assert.strictEqual(called.value, 'https://example.com/');
+  assert.ok(!dom.window.document.querySelector('.report-engine-modal-overlay'), 'ダイアログが閉じていない');
+});
+
+test('Ctrl+K: 選択なしの場合はURL欄と表示テキスト欄が出て、リンクがinsertHTMLで挿入される', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  // カーソルだけ置く(選択範囲なし)
+  const range = dom.window.document.createRange();
+  range.setStart(p.firstChild, 5);
+  range.collapse(true);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  let inserted = null;
+  dom.window.document.execCommand = (cmd, ui, value) => {
+    if (cmd === 'insertHTML') {
+      inserted = value;
+      const div = dom.window.document.createElement('div');
+      div.innerHTML = value;
+      while (div.firstChild) root.appendChild(div.firstChild);
+    }
+    return true;
+  };
+
+  dom.window.ReportEngine.openLinkDialog(root);
+  const modal = dom.window.document.querySelector('.report-engine-modal');
+  assert.strictEqual(modal.querySelectorAll('input[type="text"]').length, 2, '選択なしはURL欄+表示テキスト欄のはず');
+
+  const inputs = modal.querySelectorAll('.report-engine-input');
+  inputs[0].value = 'https://example.com/';
+  inputs[1].value = '詳細はこちら';
+  modal.querySelectorAll('.choices button')[0].click();
+
+  assert.ok(inserted && inserted.includes('href="https://example.com/"'), 'hrefが正しく挿入されていない: ' + inserted);
+  assert.ok(inserted.includes('詳細はこちら'), '表示テキストが挿入されていない: ' + inserted);
+  const a = root.querySelector('a[href="https://example.com/"]');
+  assert.ok(a, 'aタグが挿入されていない');
+});
+
+// ------------------------------------------------------------------
+// 12. 行頭でのMarkdown風オートフォーマット
+// ------------------------------------------------------------------
+
+function setCaretAtEnd(dom, textNode) {
+  const range = dom.window.document.createRange();
+  range.setStart(textNode, textNode.length);
+  range.collapse(true);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+test('"# "→H1、"## "→H2に変換される(行頭のみ)', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>#</div><div>##</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const divs = root.querySelectorAll('div');
+
+  setCaretAtEnd(dom, divs[0].firstChild);
+  let handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  assert.ok(root.querySelector('h1'), '# がH1に変換されていない: ' + root.innerHTML);
+
+  setCaretAtEnd(dom, divs[1].firstChild);
+  handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  assert.ok(root.querySelector('h2'), '## がH2に変換されていない: ' + root.innerHTML);
+});
+
+test('"* " と "- " は箇条書き(ul>li)に変換される', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>*</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const div = root.querySelector('div');
+  setCaretAtEnd(dom, div.firstChild);
+  const handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  assert.ok(root.querySelector('ul > li'), '箇条書きに変換されていない: ' + root.innerHTML);
+});
+
+test('"1. " は番号付きリスト(ol>li)に変換される', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>1.</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const div = root.querySelector('div');
+  setCaretAtEnd(dom, div.firstChild);
+  const handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  assert.ok(root.querySelector('ol > li'), '番号付きリストに変換されていない: ' + root.innerHTML);
+});
+
+test('行頭以外での"#"や"*"はMarkdown変換の対象にならない', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>foo#</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const div = root.querySelector('div');
+  setCaretAtEnd(dom, div.firstChild);
+  const handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, false, '行頭ではないのに変換されてしまっている');
+});
+
+test('"---" (3つ以上のハイフン)でEnterを押すとHRに変換される', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>----</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const div = root.querySelector('div');
+  setCaretAtEnd(dom, div.firstChild);
+  const handled = dom.window.ReportEngine.tryMarkdownEnterTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  assert.ok(root.querySelector('hr'), 'hrに変換されていない: ' + root.innerHTML);
+});
+
+test('"--" (2つのハイフン)ではHRに変換されない', async () => {
+  const dom = await makeEnv('<div id="report-content"><div>--</div></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const div = root.querySelector('div');
+  setCaretAtEnd(dom, div.firstChild);
+  const handled = dom.window.ReportEngine.tryMarkdownEnterTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, false);
+});
+
+test('リスト項目内でTabを押すとexecCommand(indent)、Shift+Tabでoutdentが呼ばれる', async () => {
+  const dom = await makeEnv('<div id="report-content"><ul><li>item</li></ul></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const li = root.querySelector('li');
+  setCaretAtEnd(dom, li.firstChild);
+
+  const calls = [];
+  dom.window.document.execCommand = (cmd) => { calls.push(cmd); return true; };
+
+  const tabEv = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(tabEv);
+  const shiftTabEv = new dom.window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(shiftTabEv);
+
+  assert.deepStrictEqual(calls, ['indent', 'outdent']);
+});
+
+// ------------------------------------------------------------------
+// 13. 書式付き内容のMarkdown書き出し(太字/斜体/下線/文字サイズ/リンク/ネストリスト/HR)
+// ------------------------------------------------------------------
+
+test('太字・斜体・下線・リンクがMarkdown(相当)に変換される', async () => {
+  const dom = await makeEnv(
+    '<div id="report-content"><p>これは<b>太字</b>と<i>斜体</i>と<u>下線</u>と<a href="https://x.com/">リンク</a>です</p></div>'
+  );
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(
+    markdown,
+    'これは**太字**と*斜体*と<u>下線</u>と[リンク](https://x.com/)です'
+  );
+});
+
+test('文字サイズ指定のspanはインラインHTMLとしてMarkdownに残る', async () => {
+  const dom = await makeEnv('<div id="report-content"><p><span style="font-size:16pt">大きい文字</span></p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '<span style="font-size:16pt">大きい文字</span>');
+});
+
+test('ネストした箇条書きがインデント付きMarkdownに変換される', async () => {
+  const dom = await makeEnv(
+    '<div id="report-content"><ul><li>親1<ul><li>子1</li><li>子2</li></ul></li><li>親2</li></ul></div>'
+  );
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '- 親1\n  - 子1\n  - 子2\n- 親2');
+});
+
+test('番号付きリストは "1. " "2. " と連番になる', async () => {
+  const dom = await makeEnv('<div id="report-content"><ol><li>いち</li><li>に</li></ol></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '1. いち\n2. に');
+});
+
+test('hrがMarkdownの --- に変換される', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>上</p><hr><p>下</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '上\n\n---\n\n下');
+});
+
+test('表のセル内の太字もMarkdown変換に反映される', async () => {
+  const html = '<div id="report-content"><table>' +
+    '<tr><th>氏名</th><td><b>山田太郎</b></td></tr>' +
+    '</table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '- 氏名\n  - **山田太郎**');
 });
 
 // ------------------------------------------------------------------
