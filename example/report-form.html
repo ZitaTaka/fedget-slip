@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月次売上報告書</title>
+<style>
+/* 帳票フォームの見た目(枠側のCSS)。
+   メニューバー自体のCSSは report-engine.js が動的に埋め込むため、
+   ここには「帳票の中身」のスタイルだけを書く。 */
+
+body {
+  margin: 0;
+  background: #eef1f5;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+  color: #1f2937;
+}
+
+#report-content {
+  max-width: 800px;
+  margin: 32px auto;
+  padding: 40px 48px;
+  background: #ffffff;
+  border: 1px solid #d7dce3;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  line-height: 1.7;
+}
+
+#report-content:focus {
+  outline: 2px solid #3b6fd6;
+  outline-offset: 4px;
+}
+
+#report-content h1 {
+  font-size: 22px;
+  margin: 0 0 20px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #20293a;
+}
+
+#report-content h2 {
+  font-size: 17px;
+  margin: 28px 0 12px;
+}
+
+#report-content p {
+  margin: 0 0 14px;
+}
+
+#report-content blockquote {
+  margin: 16px 0;
+  padding: 10px 16px;
+  border-left: 4px solid #9aa6b8;
+  background: #f5f7fa;
+  color: #4b5563;
+}
+
+#report-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+}
+
+#report-content th,
+#report-content td {
+  border: 1px solid #d7dce3;
+  padding: 8px 12px;
+  font-size: 14px;
+  text-align: left;
+}
+
+#report-content th {
+  background: #f0f3f8;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 一覧表形式(1行目が全てTHの表。report-engine.jsが自動でこのクラスを付与) */
+#report-content table.report-table-list th,
+#report-content table.report-table-list td {
+  vertical-align: top;
+}
+
+#report-content table.report-table-list th {
+  background: #e9e9e9;
+}
+
+#report-content img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 12px 0;
+}
+
+#report-content a.report-attachment {
+  display: inline-block;
+  padding: 4px 10px;
+  margin: 2px 4px;
+  background: #eef2f7;
+  border: 1px solid #c8d0dc;
+  border-radius: 999px;
+  color: #1f2937;
+  text-decoration: none;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+#report-content a.report-attachment:hover {
+  background: #e0e7f1;
+  border-color: #9aa8bc;
+}
+
+</style>
+</head>
+<body>
+
+  <div id="report-content">
+    <h1>月次売上報告書</h1>
+    <p>対象期間: 2026年8月度。この段落や下記の表・引用は自由に書き換えて記入できます。</p>
+
+    <blockquote>本資料は社外秘です。取り扱いにご注意ください。</blockquote>
+
+    <h2>基本情報(単票形式)</h2>
+    <table>
+      <tr><th>部署名</th><td>営業部</td><th>作成者</th><td>山田太郎</td></tr>
+      <tr><th>作成日</th><td>2026-09-01</td><th>承認者</th><td>佐藤花子</td></tr>
+    </table>
+
+    <h2>商品別売上(一覧表形式)</h2>
+    <table>
+      <tr><th>商品名</th><th>数量</th><th>金額</th></tr>
+      <tr><th>商品A</th><td>10</td><td>100,000</td></tr>
+      <tr><th>商品B</th><td>5</td><td>50,000</td></tr>
+    </table>
+  </div>
+
+  <!-- PDF保存に使用するライブラリ(オフラインの場合はPDF保存のみエラーになります) -->
+  <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
+  <script>
+/*!
+ * report-engine.js
+ * ------------------------------------------------------------
+ * 帳票フォーム用の contentEditable 編集 + 保存(HTML/Markdown/PDF)エンジン。
+ *
+ * 使い方:
+ *   1. HTML側に <div id="report-content"> ... 帳票の枠(見出し/段落/引用/表) ... </div>
+ *      を用意する(枠の中身は自由。h1〜h6, p, blockquote, table などが使える)。
+ *   2. report-engine.js を script 要素(src="report-engine.js")で body の最後に読み込む。
+ *   3. 読み込むと自動的に #report-content が編集可能になり、画面上部に
+ *      メニューバー(保存ボタン + メッセージ欄)が表示される。
+ *   4. Ctrl+S または保存ボタンで、保存形式(HTML/Markdown/PDF/一次保存)の選択ダイアログが開く。
+ *      「一次保存」は書きかけの内容をそのまま(CSS・JavaScriptも含めて)保存し、
+ *      後でそのファイルを開けば編集を再開できる。それ以外の3形式は完成品としての書き出し。
+ *   5. 「画像を挿入」ボタン、またはカーソル位置への貼り付け(Ctrl+V)で画像を追加できる。
+ *      画像はbase64のdata URLとして埋め込まれるため、追加ファイル無しで自己完結する。
+ *   6. 「ファイルを添付」ボタンで、任意のファイル(PDF/Excel等)をチップ形式で挿入できる。
+ *      クリックすると元のファイル名でダウンロードできる(data URL埋め込み・contenteditable=false)。
+ *   7. 表のセル内でTabキーを押すと次のセルへ移動。最終行の最終セルでTabを押すと
+ *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
+ *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
+ *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   8. Markdown風のショートカット/オートフォーマットに対応する:
+ *      選択中のテキストに Ctrl+Shift+B(太字)/Ctrl+Shift+Y(斜体)/Ctrl+Shift+U(下線)/
+ *      Ctrl+Shift+ +・Ctrl+Shift+ -(文字サイズを2pt刻みで増減)/Ctrl+Shift+K(リンク挿入、URL入力フォーム付き)。
+ *      行頭での "# "→見出し(#の数だけH1〜H6)、"* "/"- "→箇条書き、"1. "→番号付きリスト、
+ *      "---"+Enter→区切り線(hr)。リスト項目内ではTab/Shift+Tabでレベルの上げ下げ。
+ *      これらはすべてMarkdown書き出し時にも **太字** ・*斜体* ・[リンク](url)・
+ *      ネストした箇条書き・区切り線として反映される(下線・文字サイズはMarkdownに
+ *      記法が無いためインラインHTMLとしてそのまま埋め込む)。
+ *
+ * 表 → Markdown 変換ルール:
+ *   ・1行目の全セルがTHの場合 = 「一覧表形式」
+ *       2行目以降: 行頭がTHなら第1階層、各列の値は
+ *       「第2階層: 1行目の見出し(TH)」「第3階層: そのセル(TD)の値」
+ *   ・1行目にTD以外(TH以外)が混ざる場合 = 「単票形式」
+ *       行内を先頭から走査し、THを第1階層、直後に続くTDを第2階層として出力
+ *   ・THEAD/TBODY/TFOOTタグの有無に関わらず動作する(<tr>を直接走査)
+ *
+ * PDF保存は html2pdf.js (CDN) を利用する。html2pdf.js が読み込めない
+ * (オフライン等)場合は、その旨をメッセージ欄にエラー表示して保存を中止する。
+ */
+(function (global, document) {
+  'use strict';
+
+  var CONTAINER_ID = 'report-content';
+  var STYLE_ID = 'report-engine-style';
+
+  var ReportEngine = {};
+
+  // ==============================================================
+  // ユーティリティ
+  // ==============================================================
+
+  function textOf(el) {
+    return (el.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function readFileAsDataURL(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = function () { reject(reader.error); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // 選択範囲がコンテナ外(未フォーカス)の場合は、コンテナ末尾にカーソルを置く
+  function focusContainer(root) {
+    var sel = global.getSelection();
+    var insideContainer = sel && sel.anchorNode && root.contains(sel.anchorNode);
+    if (!insideContainer) {
+      root.focus();
+      var range = document.createRange();
+      range.selectNodeContents(root);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+
+  function insertImageDataUrl(root, dataUrl) {
+    focusContainer(root);
+    document.execCommand('insertImage', false, dataUrl);
+  }
+
+  function insertHtmlAtCursor(root, html) {
+    focusContainer(root);
+    document.execCommand('insertHTML', false, html);
+  }
+
+  // ==============================================================
+  // 文字サイズ変更(Ctrl+ +/- で2pt刻み)
+  // ==============================================================
+  var DEFAULT_FONT_SIZE_PT = 12;
+  var MIN_FONT_SIZE_PT = 6;
+  var MAX_FONT_SIZE_PT = 96;
+
+  // 選択範囲の開始位置から祖先をたどり、直近のfont-size指定(pt)を探す。
+  // 無ければ既定値を使う(選択範囲より外側=既定より小さい/大きいで無限に増減しないための基準)。
+  function findAncestorFontSizePt(node, root) {
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && node.style && node.style.fontSize) {
+        var m = /^([\d.]+)pt$/.exec(node.style.fontSize);
+        if (m) return parseFloat(m[1]);
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function adjustFontSize(root, delta) {
+    var sel = global.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return; // 選択範囲が無ければ何もしない
+    var range = sel.getRangeAt(0);
+    var base = findAncestorFontSizePt(range.startContainer, root);
+    if (base === null) base = DEFAULT_FONT_SIZE_PT;
+    var next = Math.max(MIN_FONT_SIZE_PT, Math.min(MAX_FONT_SIZE_PT, base + delta));
+
+    var contents = range.extractContents();
+    var span = document.createElement('span');
+    span.style.fontSize = next + 'pt';
+    span.appendChild(contents);
+    range.insertNode(span);
+
+    // extractContents後、元のfont-sizeラッパーが空になって残ることがあるので、
+    // 無駄なネストを避けるためそのラッパーは展開して取り除く。
+    var parent = span.parentNode;
+    if (parent && parent.nodeType === 1 && parent.tagName === 'SPAN' && parent.style.fontSize &&
+        parent.childNodes.length === 1 && parent.childNodes[0] === span) {
+      parent.parentNode.replaceChild(span, parent);
+    }
+
+    var newRange = document.createRange();
+    newRange.selectNodeContents(span);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+
+  function humanFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    var units = ['KB', 'MB', 'GB'];
+    var i = -1;
+    do { bytes /= 1024; i++; } while (bytes >= 1024 && i < units.length - 1);
+    return bytes.toFixed(1) + ' ' + units[i];
+  }
+
+  // ファイルをdata URLとして埋め込んだ「添付チップ」(<a download>)を挿入する。
+  // クリックすると元のファイル名でダウンロードできる。contenteditable="false" にして
+  // チップ自体は編集不可(選択して削除は可能)にしている。
+  function insertAttachmentFile(root, file, dataUrl) {
+    var label = escapeHtml('📎 ' + file.name + ' (' + humanFileSize(file.size) + ')');
+    var html = '<a href="' + dataUrl + '" download="' + escapeHtml(file.name) + '" ' +
+      'class="report-attachment" contenteditable="false">' + label + '</a>&nbsp;';
+    insertHtmlAtCursor(root, html);
+  }
+
+  function sanitizeFilename(name) {
+    var cleaned = String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+    return cleaned || 'report';
+  }
+
+  // ==============================================================
+  // インライン整形 → Markdown (太字/斜体/下線/文字サイズ/リンク/画像)
+  // ==============================================================
+
+  // 要素の中身を、ネストした太字/斜体/下線/文字サイズ/リンク/画像を保ったまま
+  // インラインのMarkdown文字列に変換する(下線・文字サイズはMarkdownに記法が無いため
+  // インラインHTMLとしてそのまま埋め込む。多くのMarkdownレンダラはこれを解釈できる)。
+  function inlineToMarkdown(node) {
+    var out = '';
+    Array.from(node.childNodes).forEach(function (child) {
+      if (child.nodeType === 3) { out += child.textContent; return; }
+      if (child.nodeType !== 1) return;
+      var t = child.tagName.toLowerCase();
+      if (t === 'br') { out += '\n'; return; }
+      if (t === 'b' || t === 'strong') { out += '**' + inlineToMarkdown(child) + '**'; return; }
+      if (t === 'i' || t === 'em') { out += '*' + inlineToMarkdown(child) + '*'; return; }
+      if (t === 'u') { out += '<u>' + inlineToMarkdown(child) + '</u>'; return; }
+      if (t === 'img') { out += '![' + (child.getAttribute('alt') || '') + '](' + (child.getAttribute('src') || '') + ')'; return; }
+      if (t === 'a') { out += '[' + inlineToMarkdown(child) + '](' + (child.getAttribute('href') || '') + ')'; return; }
+      if (t === 'span' && child.style && child.style.fontSize) {
+        out += '<span style="font-size:' + child.style.fontSize + '">' + inlineToMarkdown(child) + '</span>';
+        return;
+      }
+      out += inlineToMarkdown(child); // その他の未対応インライン要素は中身だけ展開
+    });
+    return out;
+  }
+
+  function inlineText(node) {
+    return inlineToMarkdown(node).replace(/\s+/g, ' ').trim();
+  }
+
+  // ==============================================================
+  // 表 → Markdown 変換
+  // ==============================================================
+
+  // theadやtbodyの有無に関わらず、tableの下のtrを出現順にすべて取得する
+  function getDirectRows(table) {
+    return Array.from(table.querySelectorAll('tr'));
+  }
+
+  // 表を「一覧表形式」(1行目が全てTH)か「単票形式」かに応じてクラス分けする。
+  // CSSでの見た目の出し分け(vertical-align/背景色など)に使う。
+  // Markdown変換のisListFormat判定とは独立した処理(見た目専用)。
+  function classifyTables(root) {
+    Array.from(root.querySelectorAll('table')).forEach(function (table) {
+      var rows = getDirectRows(table);
+      if (rows.length === 0) return;
+      var headerCells = Array.from(rows[0].cells);
+      var isList = headerCells.length > 0 && headerCells.every(function (c) {
+        return c.tagName.toLowerCase() === 'th';
+      });
+      table.classList.remove('report-table-list', 'report-table-form');
+      table.classList.add(isList ? 'report-table-list' : 'report-table-form');
+    });
+  }
+
+  // ==============================================================
+  // 表のTabキー操作(次のセルへ移動 / 最終行の最終セルで行を追加)
+  // ==============================================================
+
+  function getCurrentCell(root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.anchorNode) return null;
+    var node = sel.anchorNode;
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && /^(TH|TD)$/.test(node.tagName)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function placeCaretAtStart(cell) {
+    var range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(true);
+    var sel = global.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // 最終行と同じ列数の新しい行を作る。
+  // 一覧表形式は常に「先頭TH + 残りTD」(1行目の見出しと同じ列数)、
+  // 単票形式は今のいた行のセル種別(TH/TD)パターンをそのまま踏襲する。
+  function buildNewRow(table, rows, currentRow) {
+    var headerCells = Array.from(rows[0].cells);
+    var isListFormat = headerCells.length > 0 && headerCells.every(function (c) {
+      return c.tagName.toLowerCase() === 'th';
+    });
+    var newRow = document.createElement('tr');
+    if (isListFormat) {
+      headerCells.forEach(function (_, i) {
+        newRow.appendChild(document.createElement(i === 0 ? 'th' : 'td'));
+      });
+    } else {
+      Array.from(currentRow.cells).forEach(function (c) {
+        newRow.appendChild(document.createElement(c.tagName.toLowerCase()));
+      });
+    }
+    return newRow;
+  }
+
+  function handleTabInTable(e, root) {
+    var cell = getCurrentCell(root);
+    if (!cell) return false;
+    var row = cell.parentNode;
+    var table = cell.closest('table');
+    if (!table) return false;
+
+    var cellsInRow = Array.from(row.cells);
+    var rows = getDirectRows(table);
+    var cellIndex = cellsInRow.indexOf(cell);
+    var rowIndex = rows.indexOf(row);
+    var isLastCellInRow = cellIndex === cellsInRow.length - 1;
+    var isLastRow = rowIndex === rows.length - 1;
+
+    e.preventDefault();
+
+    if (!isLastCellInRow) {
+      placeCaretAtStart(cellsInRow[cellIndex + 1]);
+      return true;
+    }
+    if (!isLastRow) {
+      var nextRowCells = Array.from(rows[rowIndex + 1].cells);
+      if (nextRowCells.length) placeCaretAtStart(nextRowCells[0]);
+      return true;
+    }
+    // 最終行の最終セル → 新しい行を追加
+    var newRow = buildNewRow(table, rows, row);
+    row.parentNode.appendChild(newRow);
+    if (newRow.cells.length) placeCaretAtStart(newRow.cells[0]);
+    return true;
+  }
+
+  // ==============================================================
+  // リスト項目でのTab/Shift+Tab(レベルUP/DOWN)
+  // ==============================================================
+  function getCurrentListItem(root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.anchorNode) return null;
+    var node = sel.anchorNode;
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && node.tagName === 'LI') return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  // ==============================================================
+  // 行頭でのMarkdown風オートフォーマット
+  // ("# "→見出し、"* "/"- "→箇条書き、"1. "→番号付きリスト、"---"+Enter→区切り線)
+  // ==============================================================
+
+  // caretのある「行」に相当するブロック要素(div/p/li/見出し/blockquote)を探す。
+  // 見つからない場合はroot自体を返す(=対象外として扱う)。
+  function getBlockElement(node, root) {
+    while (node && node !== root) {
+      if (node.nodeType === 1 && /^(DIV|P|LI|H1|H2|H3|H4|H5|H6|BLOCKQUOTE)$/.test(node.tagName)) return node;
+      node = node.parentNode;
+    }
+    return root;
+  }
+
+  function textBeforeCaretInBlock(block, caretNode, caretOffset) {
+    var range = document.createRange();
+    range.selectNodeContents(block);
+    range.setEnd(caretNode, caretOffset);
+    return range.toString();
+  }
+
+  function replaceBlockWithElement(block, newEl) {
+    block.parentNode.replaceChild(newEl, block);
+  }
+
+  // スペースキー押下時: "# "見出し/"* ","- "箇条書き/"1. "番号付きリストへの変換を試みる。
+  // 変換した場合はtrueを返す(呼び出し側でpreventDefault済み)。
+  function tryMarkdownSpaceTrigger(e, root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return false;
+    var range = sel.getRangeAt(0);
+    var block = getBlockElement(range.startContainer, root);
+    if (block === root) return false;
+    var textBefore = textBeforeCaretInBlock(block, range.startContainer, range.startOffset);
+
+    var headerMatch = /^(#{1,6})$/.exec(textBefore);
+    if (headerMatch) {
+      e.preventDefault();
+      var h = document.createElement('h' + headerMatch[1].length);
+      h.innerHTML = '<br>'; // 空要素でもカーソルを置けるように
+      replaceBlockWithElement(block, h);
+      placeCaretAtStart(h);
+      return true;
+    }
+    if (textBefore === '*' || textBefore === '-') {
+      e.preventDefault();
+      var ul = document.createElement('ul');
+      var uli = document.createElement('li');
+      uli.innerHTML = '<br>';
+      ul.appendChild(uli);
+      replaceBlockWithElement(block, ul);
+      placeCaretAtStart(uli);
+      return true;
+    }
+    if (/^\d+\.$/.test(textBefore)) {
+      e.preventDefault();
+      var ol = document.createElement('ol');
+      var oli = document.createElement('li');
+      oli.innerHTML = '<br>';
+      ol.appendChild(oli);
+      replaceBlockWithElement(block, ol);
+      placeCaretAtStart(oli);
+      return true;
+    }
+    return false;
+  }
+
+  // Enterキー押下時: 行全体が "---" 以上(ハイフン3つ以上のみ)ならHRに変換する。
+  function tryMarkdownEnterTrigger(e, root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return false;
+    var range = sel.getRangeAt(0);
+    var block = getBlockElement(range.startContainer, root);
+    if (block === root) return false;
+    var text = (block.textContent || '').trim();
+    if (!/^-{3,}$/.test(text)) return false;
+
+    e.preventDefault();
+    var hr = document.createElement('hr');
+    var nextBlock = document.createElement('div');
+    nextBlock.innerHTML = '<br>';
+    replaceBlockWithElement(block, hr);
+    hr.parentNode.insertBefore(nextBlock, hr.nextSibling);
+    placeCaretAtStart(nextBlock);
+    return true;
+  }
+
+  function tableToMarkdown(table, warnings) {
+    var rows = getDirectRows(table);
+    if (rows.length === 0) {
+      warnings.push('空の表があります(変換をスキップしました)。');
+      return '';
+    }
+
+    var hasSpan = rows.some(function (row) {
+      return Array.from(row.cells).some(function (c) {
+        return (c.colSpan && c.colSpan > 1) || (c.rowSpan && c.rowSpan > 1);
+      });
+    });
+    if (hasSpan) {
+      warnings.push('結合セル(colspan/rowspan)を含む表があります。変換結果をご確認ください。');
+    }
+
+    var firstRowCells = Array.from(rows[0].cells);
+    var isListFormat = firstRowCells.length > 0 && firstRowCells.every(function (c) {
+      return c.tagName.toLowerCase() === 'th';
+    });
+
+    var lines = [];
+
+    if (isListFormat) {
+      // ---- 一覧表形式: 1行目=見出し行、2行目以降=各レコード ----
+      var headers = firstRowCells.map(inlineText);
+      for (var i = 1; i < rows.length; i++) {
+        var cells = Array.from(rows[i].cells);
+        if (cells.length === 0) continue;
+
+        var offset = 0;
+        if (cells[0].tagName.toLowerCase() === 'th') {
+          lines.push('- ' + inlineText(cells[0]));
+          offset = 1;
+        } else {
+          warnings.push('一覧表形式の' + (i + 1) + '行目の先頭列がTHではありません。');
+        }
+
+        for (var j = offset; j < cells.length; j++) {
+          var header = headers[j];
+          if (header === undefined) {
+            warnings.push('表の' + (i + 1) + '行目 ' + (j + 1) + '列目に対応する見出し(TH)がありません。');
+            header = '(列' + (j + 1) + ')';
+          }
+          var indent = offset ? '  ' : '';
+          lines.push(indent + '- ' + header);
+          lines.push(indent + '  - ' + inlineText(cells[j]));
+        }
+      }
+    } else {
+      // ---- 単票形式: TH→TD のペアを先頭から走査 ----
+      rows.forEach(function (row, rIdx) {
+        var pendingTH = null;
+        Array.from(row.cells).forEach(function (cell, cIdx) {
+          var tag = cell.tagName.toLowerCase();
+          var text = inlineText(cell);
+          if (tag === 'th') {
+            lines.push('- ' + text);
+            pendingTH = text;
+          } else {
+            if (pendingTH === null) {
+              warnings.push('単票形式の' + (rIdx + 1) + '行目 ' + (cIdx + 1) + '列目のTDに対応するTHがありません。');
+              lines.push('- ' + text);
+            } else {
+              lines.push('  - ' + text);
+            }
+          }
+        });
+      });
+    }
+
+    return lines.join('\n');
+  }
+
+  // ==============================================================
+  // リスト(ul/ol) → Markdown。Tab/Shift+Tabで作られるネストにも対応する。
+  // ==============================================================
+  function listToMarkdown(listNode, depth) {
+    var lines = [];
+    var isOrdered = listNode.tagName.toLowerCase() === 'ol';
+    var indent = '  '.repeat(depth);
+    var index = 1;
+    Array.from(listNode.children).forEach(function (li) {
+      if (li.tagName.toLowerCase() !== 'li') return;
+      var nestedLists = [];
+      var inlineParts = '';
+      Array.from(li.childNodes).forEach(function (child) {
+        if (child.nodeType === 1 && /^(UL|OL)$/.test(child.tagName)) {
+          nestedLists.push(child);
+        } else if (child.nodeType === 3) {
+          inlineParts += child.textContent;
+        } else if (child.nodeType === 1) {
+          inlineParts += inlineToMarkdown(child);
+        }
+      });
+      var label = inlineParts.replace(/\s+/g, ' ').trim();
+      lines.push(indent + (isOrdered ? (index + '. ') : '- ') + label);
+      nestedLists.forEach(function (nested) { lines.push(listToMarkdown(nested, depth + 1)); });
+      index++;
+    });
+    return lines.join('\n');
+  }
+
+  function nodeToMarkdown(node, lines, warnings) {
+    if (node.nodeType === 3) { // TEXT_NODE
+      var t = textOf(node);
+      if (t) lines.push(t);
+      return;
+    }
+    if (node.nodeType !== 1) return; // ELEMENT_NODEのみ処理
+
+    var tag = node.tagName.toLowerCase();
+
+    if (/^h[1-6]$/.test(tag)) {
+      lines.push('#'.repeat(Number(tag[1])) + ' ' + inlineText(node));
+      lines.push('');
+      return;
+    }
+    if (tag === 'blockquote') {
+      var quoted = inlineText(node).split(/\n+/).map(function (l) { return '> ' + l; }).join('\n');
+      lines.push(quoted);
+      lines.push('');
+      return;
+    }
+    if (tag === 'table') {
+      lines.push(tableToMarkdown(node, warnings));
+      lines.push('');
+      return;
+    }
+    if (tag === 'ul' || tag === 'ol') {
+      lines.push(listToMarkdown(node, 0));
+      lines.push('');
+      return;
+    }
+    if (tag === 'hr') { lines.push('---'); lines.push(''); return; }
+    if (tag === 'br') { lines.push(''); return; }
+    if (tag === 'script' || tag === 'style') { return; }
+    if (tag === 'img') {
+      var alt = node.getAttribute('alt') || '';
+      var src = node.getAttribute('src') || '';
+      lines.push('![' + alt + '](' + src + ')');
+      lines.push('');
+      return;
+    }
+    if (tag === 'a') {
+      lines.push('[' + inlineText(node) + '](' + (node.getAttribute('href') || '') + ')');
+      lines.push('');
+      return;
+    }
+
+    // 見出し/表/引用/リスト/HRを子に含む場合は再帰、それ以外は本文としてそのまま出力
+    // (img/aはinlineToMarkdownが文中でそのまま扱えるため、ここでは特別扱いしない)
+    var hasBlockChild = Array.from(node.children).some(function (c) {
+      var t2 = c.tagName.toLowerCase();
+      return /^h[1-6]$/.test(t2) || ['table', 'blockquote', 'ul', 'ol', 'hr'].indexOf(t2) !== -1;
+    });
+    if (hasBlockChild) {
+      Array.from(node.childNodes).forEach(function (child) { nodeToMarkdown(child, lines, warnings); });
+    } else {
+      var text = inlineText(node);
+      if (text) { lines.push(text); lines.push(''); }
+    }
+  }
+
+  function containerToMarkdown(root) {
+    var warnings = [];
+    var lines = [];
+    Array.from(root.childNodes).forEach(function (n) { nodeToMarkdown(n, lines, warnings); });
+    var md = lines.join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/^\n+|\n+$/g, '');
+    return { markdown: md, warnings: warnings };
+  }
+
+  // ==============================================================
+  // HTML変換(CSS埋め込み・scriptタグ除去)
+  // ==============================================================
+
+  function collectCSS() {
+    var cssText = '';
+    var warnings = [];
+    Array.from(document.styleSheets).forEach(function (sheet) {
+      if (sheet.ownerNode && sheet.ownerNode.id === STYLE_ID) return; // 本エンジンのUI用CSSは除外
+      try {
+        var rules = sheet.cssRules || sheet.rules || [];
+        Array.from(rules).forEach(function (r) { cssText += r.cssText + '\n'; });
+      } catch (e) {
+        warnings.push('スタイルシートを読み込めませんでした: ' + (sheet.href || 'inline'));
+      }
+    });
+    return { cssText: cssText, warnings: warnings };
+  }
+
+  function containerToStandaloneHTML(root, title) {
+    var clone = root.cloneNode(true);
+    Array.from(clone.querySelectorAll('script')).forEach(function (s) { s.remove(); });
+    clone.removeAttribute('contenteditable');
+    Array.from(clone.querySelectorAll('[contenteditable]')).forEach(function (el) {
+      el.removeAttribute('contenteditable');
+    });
+
+    var css = collectCSS();
+    var html = '<!DOCTYPE html>\n<html lang="ja">\n<head>\n<meta charset="UTF-8">\n' +
+      '<title>' + escapeHtml(title) + '</title>\n<style>\n' + css.cssText + '</style>\n</head>\n<body>\n' +
+      clone.outerHTML + '\n</body>\n</html>\n';
+    return { html: html, warnings: css.warnings };
+  }
+
+  // 一次保存: 書きかけの内容を、CSS/JavaScriptを含めて今の状態のまま書き出す。
+  // (このファイルを開けば、そのまま編集を再開できる)
+  // メニューバーなど本エンジンが動的に生成したUI要素だけは、再度開いたときに
+  // 二重生成されないよう取り除く(scriptタグ自体は残すので、開けば自動的に作り直される)。
+  function buildDraftHTML() {
+    var docClone = document.documentElement.cloneNode(true);
+    var bar = docClone.querySelector('.report-engine-bar');
+    if (bar) bar.remove();
+    var overlay = docClone.querySelector('.report-engine-modal-overlay');
+    if (overlay) overlay.remove();
+    var bodyEl = docClone.querySelector('body');
+    if (bodyEl) bodyEl.style.paddingTop = '';
+    return '<!DOCTYPE html>\n' + docClone.outerHTML + '\n';
+  }
+
+  // ==============================================================
+  // ダウンロード
+  // ==============================================================
+
+  ReportEngine.downloadBlob = function (content, filename, mime) {
+    var blob = new Blob([content], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  };
+
+  function getBaseFilename() {
+    var root = document.getElementById(CONTAINER_ID);
+    var h1 = root && root.querySelector('h1');
+    return sanitizeFilename((h1 && textOf(h1)) || document.title);
+  }
+
+  // ==============================================================
+  // PDF出力 (html2pdf.js を利用)
+  // ==============================================================
+
+  function exportPDF(root, filename, onError) {
+    if (typeof global.html2pdf === 'undefined') {
+      onError('PDF出力ライブラリ(html2pdf.js)を読み込めませんでした。インターネット接続を確認してください。');
+      return;
+    }
+    var clone = root.cloneNode(true);
+    clone.removeAttribute('contenteditable');
+    global.html2pdf().set({
+      filename: filename,
+      margin: 10,
+      html2canvas: { scale: 2 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    }).from(clone).save();
+  }
+
+  // ==============================================================
+  // UI: メニューバー / メッセージ欄 / 保存形式選択ダイアログ
+  // ==============================================================
+
+  var els = {};
+
+  function injectStyle() {
+    if (document.getElementById(STYLE_ID)) return;
+    var style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent =
+      '.report-engine-bar{position:fixed;top:0;left:0;right:0;z-index:9999;' +
+      'display:flex;align-items:center;gap:12px;padding:10px 16px;' +
+      'background:#20293a;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;' +
+      'font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,.2);}' +
+      '.report-engine-bar button.save{cursor:pointer;border:none;border-radius:6px;padding:6px 16px;' +
+      'background:#3b6fd6;color:#fff;font-size:14px;flex-shrink:0;}' +
+      '.report-engine-bar button.save:hover{background:#2f5bb3;}' +
+      '.report-engine-bar button.insert-img{cursor:pointer;border-radius:6px;padding:6px 16px;' +
+      'background:transparent;color:#fff;font-size:14px;flex-shrink:0;border:1px solid #4b5a70;}' +
+      '.report-engine-bar button.insert-img:hover{background:#2c374a;}' +
+      '.report-engine-msg{flex:1;min-height:1.2em;font-size:13px;color:#cbd3e1;}' +
+      '.report-engine-msg.error{color:#ffb4b4;}' +
+      '.report-engine-msg .close-msg{margin-left:8px;cursor:pointer;background:none;border:none;' +
+      'color:inherit;font-size:13px;text-decoration:underline;padding:0;}' +
+      '.report-engine-modal-overlay{position:fixed;inset:0;background:rgba(15,20,30,.45);' +
+      'display:flex;align-items:center;justify-content:center;z-index:10000;}' +
+      '.report-engine-modal{background:#fff;border-radius:10px;padding:24px;min-width:260px;' +
+      'box-shadow:0 8px 24px rgba(0,0,0,.25);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}' +
+      '.report-engine-modal h2{margin:0 0 16px;font-size:15px;color:#111827;font-weight:600;}' +
+      '.report-engine-modal .report-engine-input{display:block;width:260px;box-sizing:border-box;' +
+      'padding:8px 10px;margin:0 0 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;}' +
+      '.report-engine-modal .choices{display:flex;flex-direction:column;gap:8px;}' +
+      '.report-engine-modal .choices button{padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;' +
+      'background:#f9fafb;font-size:14px;cursor:pointer;text-align:left;}' +
+      '.report-engine-modal .choices button:hover{background:#eef2ff;border-color:#6366f1;}' +
+      '.report-engine-modal .cancel{margin-top:14px;background:none;border:none;color:#6b7280;' +
+      'cursor:pointer;font-size:13px;padding:0;}';
+    document.head.appendChild(style);
+  }
+
+  function buildMenuBar() {
+    var bar = document.createElement('div');
+    bar.className = 'report-engine-bar';
+
+    var saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'save';
+    saveBtn.textContent = '保存';
+    saveBtn.addEventListener('click', openFormatChooser);
+
+    var fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.style.display = 'none';
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (file) handleImageFile(file);
+    });
+
+    var imgBtn = document.createElement('button');
+    imgBtn.type = 'button';
+    imgBtn.className = 'insert-img';
+    imgBtn.textContent = '画像を挿入';
+    imgBtn.addEventListener('click', function () { fileInput.click(); });
+
+    var attachInput = document.createElement('input');
+    attachInput.type = 'file';
+    attachInput.style.display = 'none';
+    attachInput.addEventListener('change', function () {
+      var file = attachInput.files && attachInput.files[0];
+      attachInput.value = '';
+      if (file) handleAttachmentFile(file);
+    });
+
+    var attachBtn = document.createElement('button');
+    attachBtn.type = 'button';
+    attachBtn.className = 'insert-img';
+    attachBtn.textContent = 'ファイルを添付';
+    attachBtn.addEventListener('click', function () { attachInput.click(); });
+
+    var msg = document.createElement('span');
+    msg.className = 'report-engine-msg';
+
+    bar.appendChild(saveBtn);
+    bar.appendChild(imgBtn);
+    bar.appendChild(fileInput);
+    bar.appendChild(attachBtn);
+    bar.appendChild(attachInput);
+    bar.appendChild(msg);
+    document.body.insertBefore(bar, document.body.firstChild);
+
+    // 本文がバーの下に隠れないよう余白を確保
+    document.body.style.paddingTop = bar.offsetHeight + 'px';
+
+    els.bar = bar;
+    els.saveBtn = saveBtn;
+    els.imgBtn = imgBtn;
+    els.attachBtn = attachBtn;
+    els.msg = msg;
+  }
+
+  function handleImageFile(file) {
+    var root = document.getElementById(CONTAINER_ID);
+    if (!root) return Promise.resolve();
+    return readFileAsDataURL(file).then(function (dataUrl) {
+      insertImageDataUrl(root, dataUrl);
+    }).catch(function () {
+      showMessage('画像の読み込みに失敗しました。', 'error');
+    });
+  }
+
+  var LARGE_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
+
+  function handleAttachmentFile(file) {
+    var root = document.getElementById(CONTAINER_ID);
+    if (!root) return Promise.resolve();
+    return readFileAsDataURL(file).then(function (dataUrl) {
+      insertAttachmentFile(root, file, dataUrl);
+      if (file.size > LARGE_ATTACHMENT_BYTES) {
+        showMessage('添付ファイル「' + file.name + '」のサイズが大きいため(' + humanFileSize(file.size) + ')、保存ファイルも大きくなります。', 'error');
+      } else {
+        clearMessage();
+      }
+    }).catch(function () {
+      showMessage('ファイルの読み込みに失敗しました。', 'error');
+    });
+  }
+
+  function showMessage(text, type) {
+    els.msg.innerHTML = '';
+    els.msg.className = 'report-engine-msg' + (type === 'error' ? ' error' : '');
+    var span = document.createElement('span');
+    span.textContent = text;
+    els.msg.appendChild(span);
+    if (type === 'error') {
+      var close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'close-msg';
+      close.textContent = '閉じる';
+      close.addEventListener('click', clearMessage);
+      els.msg.appendChild(close);
+    }
+  }
+
+  function clearMessage() {
+    els.msg.textContent = '';
+    els.msg.className = 'report-engine-msg';
+  }
+
+  // Ctrl+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
+  // モーダルを開くとcontentEditable内の選択が失われるため、開く前にRangeを複製して保持しておく。
+  function openLinkDialog(root) {
+    var sel = global.getSelection();
+    var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
+    var hasSelection = !!(savedRange && !savedRange.collapsed);
+
+    var overlay = document.createElement('div');
+    overlay.className = 'report-engine-modal-overlay';
+    var modal = document.createElement('div');
+    modal.className = 'report-engine-modal';
+
+    var heading = document.createElement('h2');
+    heading.textContent = 'リンクを挿入';
+    modal.appendChild(heading);
+
+    var urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'report-engine-input';
+    urlInput.placeholder = 'https://example.com';
+    modal.appendChild(urlInput);
+
+    var textInput = null;
+    if (!hasSelection) {
+      textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'report-engine-input';
+      textInput.placeholder = '表示テキスト';
+      modal.appendChild(textInput);
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'choices';
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.textContent = 'リンクを挿入';
+    okBtn.addEventListener('click', function () {
+      var url = urlInput.value.trim();
+      if (!url) { urlInput.focus(); return; }
+      if (sel) {
+        sel.removeAllRanges();
+        if (savedRange) sel.addRange(savedRange);
+      }
+      if (hasSelection) {
+        document.execCommand('createLink', false, url);
+      } else {
+        var label = escapeHtml(textInput.value.trim() || url);
+        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + label + '</a>&nbsp;');
+      }
+      document.body.removeChild(overlay);
+    });
+    actions.appendChild(okBtn);
+    modal.appendChild(actions);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cancel';
+    cancel.textContent = 'キャンセル';
+    cancel.addEventListener('click', function () { document.body.removeChild(overlay); });
+    modal.appendChild(cancel);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) document.body.removeChild(overlay);
+    });
+    document.body.appendChild(overlay);
+    urlInput.focus();
+  }
+
+  function openFormatChooser() {
+    var overlay = document.createElement('div');
+    overlay.className = 'report-engine-modal-overlay';
+
+    var modal = document.createElement('div');
+    modal.className = 'report-engine-modal';
+
+    var heading = document.createElement('h2');
+    heading.textContent = '保存形式を選択してください';
+    modal.appendChild(heading);
+
+    var choices = document.createElement('div');
+    choices.className = 'choices';
+    [
+      ['html', 'HTML (.html) - 完成版'],
+      ['markdown', 'Markdown (.md)'],
+      ['pdf', 'PDF (.pdf)'],
+      ['draft', '一次保存 (.html) - 編集を続ける用']
+    ].forEach(function (pair) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.format = pair[0];
+      b.textContent = pair[1];
+      b.addEventListener('click', function () {
+        document.body.removeChild(overlay);
+        performSave(pair[0]);
+      });
+      choices.appendChild(b);
+    });
+    modal.appendChild(choices);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cancel';
+    cancel.textContent = 'キャンセル';
+    cancel.addEventListener('click', function () { document.body.removeChild(overlay); });
+    modal.appendChild(cancel);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) document.body.removeChild(overlay);
+    });
+    document.body.appendChild(overlay);
+  }
+
+  function performSave(format) {
+    var root = document.getElementById(CONTAINER_ID);
+    if (!root) {
+      showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。', 'error');
+      return;
+    }
+    classifyTables(root);
+    var base = getBaseFilename();
+
+    if (format === 'markdown') {
+      var mdRes = containerToMarkdown(root);
+      ReportEngine.downloadBlob(mdRes.markdown, base + '.md', 'text/markdown');
+      mdRes.warnings.length ? showMessage(mdRes.warnings.join(' / '), 'error') : clearMessage();
+      return;
+    }
+    if (format === 'html') {
+      var htmlRes = containerToStandaloneHTML(root, base);
+      ReportEngine.downloadBlob(htmlRes.html, base + '.html', 'text/html');
+      htmlRes.warnings.length ? showMessage(htmlRes.warnings.join(' / '), 'error') : clearMessage();
+      return;
+    }
+    if (format === 'pdf') {
+      exportPDF(root, base + '.pdf', function (msg) { showMessage(msg, 'error'); });
+      return;
+    }
+    if (format === 'draft') {
+      var draftHtml = buildDraftHTML();
+      ReportEngine.downloadBlob(draftHtml, 'wip_' + base + '.html', 'text/html');
+      clearMessage();
+    }
+  }
+
+  // ==============================================================
+  // 初期化
+  // ==============================================================
+
+  function init() {
+    injectStyle();
+    buildMenuBar();
+
+    var root = document.getElementById(CONTAINER_ID);
+    if (root) {
+      root.setAttribute('contenteditable', 'true');
+      classifyTables(root);
+    } else {
+      showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。id="' + CONTAINER_ID + '" の要素を用意してください。', 'error');
+    }
+
+    document.addEventListener('keydown', function (e) {
+      var key = (e.key || '').toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && key === 's') {
+        e.preventDefault();
+        openFormatChooser();
+        return;
+      }
+      if (!root) return;
+
+      // 選択範囲への書式ショートカット(すべて Ctrl+Shift+...)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        if (key === 'b') { e.preventDefault(); document.execCommand('bold'); return; }
+        if (key === 'y') { e.preventDefault(); document.execCommand('italic'); return; }
+        if (key === 'u') { e.preventDefault(); document.execCommand('underline'); return; }
+        if (key === 'k') { e.preventDefault(); openLinkDialog(root); return; }
+        if (e.key === '+' || e.key === '=') { e.preventDefault(); adjustFontSize(root, 2); return; }
+        if (e.key === '-' || e.key === '_') { e.preventDefault(); adjustFontSize(root, -2); return; }
+      }
+
+      // Tab: 表のセル間移動/行追加、または リストのレベルUP・DOWN
+      if (e.key === 'Tab') {
+        if (getCurrentCell(root)) {
+          if (!e.shiftKey) handleTabInTable(e, root);
+          return;
+        }
+        var li = getCurrentListItem(root);
+        if (li) {
+          e.preventDefault();
+          document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        }
+        return;
+      }
+
+      // 行頭でのMarkdown風オートフォーマット(修飾キー無しの場合のみ)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        if (e.key === ' ') { tryMarkdownSpaceTrigger(e, root); return; }
+        if (e.key === 'Enter') { tryMarkdownEnterTrigger(e, root); return; }
+      }
+    });
+
+    // 帳票エリア内での画像貼り付け(スクリーンショット等)に対応
+    document.addEventListener('paste', function (e) {
+      var container = document.getElementById(CONTAINER_ID);
+      if (!container || !container.contains(e.target)) return;
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].kind === 'file' && items[i].type.indexOf('image/') === 0) {
+          var file = items[i].getAsFile();
+          if (!file) continue;
+          e.preventDefault();
+          handleImageFile(file);
+          break;
+        }
+      }
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+
+  // ==============================================================
+  // 公開API(テスト・拡張用)
+  // ==============================================================
+  ReportEngine.containerToMarkdown = containerToMarkdown;
+  ReportEngine.tableToMarkdown = tableToMarkdown;
+  ReportEngine.containerToStandaloneHTML = containerToStandaloneHTML;
+  ReportEngine.buildDraftHTML = buildDraftHTML;
+  ReportEngine.classifyTables = classifyTables;
+  ReportEngine.handleTabInTable = handleTabInTable;
+  ReportEngine.performSave = performSave;
+  ReportEngine.openFormatChooser = openFormatChooser;
+  ReportEngine.readFileAsDataURL = readFileAsDataURL;
+  ReportEngine.insertImageDataUrl = insertImageDataUrl;
+  ReportEngine.handleImageFile = handleImageFile;
+  ReportEngine.handleAttachmentFile = handleAttachmentFile;
+  ReportEngine.humanFileSize = humanFileSize;
+  ReportEngine.adjustFontSize = adjustFontSize;
+  ReportEngine.openLinkDialog = openLinkDialog;
+  ReportEngine.tryMarkdownSpaceTrigger = tryMarkdownSpaceTrigger;
+  ReportEngine.tryMarkdownEnterTrigger = tryMarkdownEnterTrigger;
+  ReportEngine.getCurrentListItem = getCurrentListItem;
+  ReportEngine.inlineToMarkdown = inlineToMarkdown;
+  ReportEngine._internal = {
+    showMessage: showMessage,
+    clearMessage: clearMessage,
+    getBaseFilename: getBaseFilename,
+    exportPDF: exportPDF,
+    els: els
+  };
+
+  global.ReportEngine = ReportEngine;
+})(window, document);
+
+</script>
+</body>
+</html>
