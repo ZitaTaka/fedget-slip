@@ -14,10 +14,20 @@
  *      後でそのファイルを開けば編集を再開できる。それ以外の3形式は完成品としての書き出し。
  *   5. 「画像を挿入」ボタン、またはカーソル位置への貼り付け(Ctrl+V)で画像を追加できる。
  *      画像はbase64のdata URLとして埋め込まれるため、追加ファイル無しで自己完結する。
- *   6. 表のセル内でTabキーを押すと次のセルへ移動。最終行の最終セルでTabを押すと
+ *   6. 「ファイルを添付」ボタンで、任意のファイル(PDF/Excel等)をチップ形式で挿入できる。
+ *      クリックすると元のファイル名でダウンロードできる(data URL埋め込み・contenteditable=false)。
+ *   7. 表のセル内でTabキーを押すと次のセルへ移動。最終行の最終セルでTabを押すと
  *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
  *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
  *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   8. Markdown風のショートカット/オートフォーマットに対応する:
+ *      選択中のテキストに Ctrl+Shift+B(太字)/Ctrl+Shift+Y(斜体)/Ctrl+Shift+U(下線)/
+ *      Ctrl+Shift+ +・Ctrl+Shift+ -(文字サイズを2pt刻みで増減)/Ctrl+Shift+K(リンク挿入、URL入力フォーム付き)。
+ *      行頭での "# "→見出し(#の数だけH1〜H6)、"* "/"- "→箇条書き、"1. "→番号付きリスト、
+ *      "---"+Enter→区切り線(hr)。リスト項目内ではTab/Shift+Tabでレベルの上げ下げ。
+ *      これらはすべてMarkdown書き出し時にも **太字** ・*斜体* ・[リンク](url)・
+ *      ネストした箇条書き・区切り線として反映される(下線・文字サイズはMarkdownに
+ *      記法が無いためインラインHTMLとしてそのまま埋め込む)。
  *
  * 表 → Markdown 変換ルール:
  *   ・1行目の全セルがTHの場合 = 「一覧表形式」
@@ -80,9 +90,112 @@
     document.execCommand('insertImage', false, dataUrl);
   }
 
+  function insertHtmlAtCursor(root, html) {
+    focusContainer(root);
+    document.execCommand('insertHTML', false, html);
+  }
+
+  // ==============================================================
+  // 文字サイズ変更(Ctrl+ +/- で2pt刻み)
+  // ==============================================================
+  var DEFAULT_FONT_SIZE_PT = 12;
+  var MIN_FONT_SIZE_PT = 6;
+  var MAX_FONT_SIZE_PT = 96;
+
+  // 選択範囲の開始位置から祖先をたどり、直近のfont-size指定(pt)を探す。
+  // 無ければ既定値を使う(選択範囲より外側=既定より小さい/大きいで無限に増減しないための基準)。
+  function findAncestorFontSizePt(node, root) {
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && node.style && node.style.fontSize) {
+        var m = /^([\d.]+)pt$/.exec(node.style.fontSize);
+        if (m) return parseFloat(m[1]);
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function adjustFontSize(root, delta) {
+    var sel = global.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return; // 選択範囲が無ければ何もしない
+    var range = sel.getRangeAt(0);
+    var base = findAncestorFontSizePt(range.startContainer, root);
+    if (base === null) base = DEFAULT_FONT_SIZE_PT;
+    var next = Math.max(MIN_FONT_SIZE_PT, Math.min(MAX_FONT_SIZE_PT, base + delta));
+
+    var contents = range.extractContents();
+    var span = document.createElement('span');
+    span.style.fontSize = next + 'pt';
+    span.appendChild(contents);
+    range.insertNode(span);
+
+    // extractContents後、元のfont-sizeラッパーが空になって残ることがあるので、
+    // 無駄なネストを避けるためそのラッパーは展開して取り除く。
+    var parent = span.parentNode;
+    if (parent && parent.nodeType === 1 && parent.tagName === 'SPAN' && parent.style.fontSize &&
+        parent.childNodes.length === 1 && parent.childNodes[0] === span) {
+      parent.parentNode.replaceChild(span, parent);
+    }
+
+    var newRange = document.createRange();
+    newRange.selectNodeContents(span);
+    sel.removeAllRanges();
+    sel.addRange(newRange);
+  }
+
+  function humanFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    var units = ['KB', 'MB', 'GB'];
+    var i = -1;
+    do { bytes /= 1024; i++; } while (bytes >= 1024 && i < units.length - 1);
+    return bytes.toFixed(1) + ' ' + units[i];
+  }
+
+  // ファイルをdata URLとして埋め込んだ「添付チップ」(<a download>)を挿入する。
+  // クリックすると元のファイル名でダウンロードできる。contenteditable="false" にして
+  // チップ自体は編集不可(選択して削除は可能)にしている。
+  function insertAttachmentFile(root, file, dataUrl) {
+    var label = escapeHtml('📎 ' + file.name + ' (' + humanFileSize(file.size) + ')');
+    var html = '<a href="' + dataUrl + '" download="' + escapeHtml(file.name) + '" ' +
+      'class="report-attachment" contenteditable="false">' + label + '</a>&nbsp;';
+    insertHtmlAtCursor(root, html);
+  }
+
   function sanitizeFilename(name) {
     var cleaned = String(name || '').replace(/[\\/:*?"<>|]/g, '_').trim();
     return cleaned || 'report';
+  }
+
+  // ==============================================================
+  // インライン整形 → Markdown (太字/斜体/下線/文字サイズ/リンク/画像)
+  // ==============================================================
+
+  // 要素の中身を、ネストした太字/斜体/下線/文字サイズ/リンク/画像を保ったまま
+  // インラインのMarkdown文字列に変換する(下線・文字サイズはMarkdownに記法が無いため
+  // インラインHTMLとしてそのまま埋め込む。多くのMarkdownレンダラはこれを解釈できる)。
+  function inlineToMarkdown(node) {
+    var out = '';
+    Array.from(node.childNodes).forEach(function (child) {
+      if (child.nodeType === 3) { out += child.textContent; return; }
+      if (child.nodeType !== 1) return;
+      var t = child.tagName.toLowerCase();
+      if (t === 'br') { out += '\n'; return; }
+      if (t === 'b' || t === 'strong') { out += '**' + inlineToMarkdown(child) + '**'; return; }
+      if (t === 'i' || t === 'em') { out += '*' + inlineToMarkdown(child) + '*'; return; }
+      if (t === 'u') { out += '<u>' + inlineToMarkdown(child) + '</u>'; return; }
+      if (t === 'img') { out += '![' + (child.getAttribute('alt') || '') + '](' + (child.getAttribute('src') || '') + ')'; return; }
+      if (t === 'a') { out += '[' + inlineToMarkdown(child) + '](' + (child.getAttribute('href') || '') + ')'; return; }
+      if (t === 'span' && child.style && child.style.fontSize) {
+        out += '<span style="font-size:' + child.style.fontSize + '">' + inlineToMarkdown(child) + '</span>';
+        return;
+      }
+      out += inlineToMarkdown(child); // その他の未対応インライン要素は中身だけ展開
+    });
+    return out;
+  }
+
+  function inlineText(node) {
+    return inlineToMarkdown(node).replace(/\s+/g, ' ').trim();
   }
 
   // ==============================================================
@@ -187,6 +300,108 @@
     return true;
   }
 
+  // ==============================================================
+  // リスト項目でのTab/Shift+Tab(レベルUP/DOWN)
+  // ==============================================================
+  function getCurrentListItem(root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.anchorNode) return null;
+    var node = sel.anchorNode;
+    while (node && node !== root && node !== document) {
+      if (node.nodeType === 1 && node.tagName === 'LI') return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  // ==============================================================
+  // 行頭でのMarkdown風オートフォーマット
+  // ("# "→見出し、"* "/"- "→箇条書き、"1. "→番号付きリスト、"---"+Enter→区切り線)
+  // ==============================================================
+
+  // caretのある「行」に相当するブロック要素(div/p/li/見出し/blockquote)を探す。
+  // 見つからない場合はroot自体を返す(=対象外として扱う)。
+  function getBlockElement(node, root) {
+    while (node && node !== root) {
+      if (node.nodeType === 1 && /^(DIV|P|LI|H1|H2|H3|H4|H5|H6|BLOCKQUOTE)$/.test(node.tagName)) return node;
+      node = node.parentNode;
+    }
+    return root;
+  }
+
+  function textBeforeCaretInBlock(block, caretNode, caretOffset) {
+    var range = document.createRange();
+    range.selectNodeContents(block);
+    range.setEnd(caretNode, caretOffset);
+    return range.toString();
+  }
+
+  function replaceBlockWithElement(block, newEl) {
+    block.parentNode.replaceChild(newEl, block);
+  }
+
+  // スペースキー押下時: "# "見出し/"* ","- "箇条書き/"1. "番号付きリストへの変換を試みる。
+  // 変換した場合はtrueを返す(呼び出し側でpreventDefault済み)。
+  function tryMarkdownSpaceTrigger(e, root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return false;
+    var range = sel.getRangeAt(0);
+    var block = getBlockElement(range.startContainer, root);
+    if (block === root) return false;
+    var textBefore = textBeforeCaretInBlock(block, range.startContainer, range.startOffset);
+
+    var headerMatch = /^(#{1,6})$/.exec(textBefore);
+    if (headerMatch) {
+      e.preventDefault();
+      var h = document.createElement('h' + headerMatch[1].length);
+      h.innerHTML = '<br>'; // 空要素でもカーソルを置けるように
+      replaceBlockWithElement(block, h);
+      placeCaretAtStart(h);
+      return true;
+    }
+    if (textBefore === '*' || textBefore === '-') {
+      e.preventDefault();
+      var ul = document.createElement('ul');
+      var uli = document.createElement('li');
+      uli.innerHTML = '<br>';
+      ul.appendChild(uli);
+      replaceBlockWithElement(block, ul);
+      placeCaretAtStart(uli);
+      return true;
+    }
+    if (/^\d+\.$/.test(textBefore)) {
+      e.preventDefault();
+      var ol = document.createElement('ol');
+      var oli = document.createElement('li');
+      oli.innerHTML = '<br>';
+      ol.appendChild(oli);
+      replaceBlockWithElement(block, ol);
+      placeCaretAtStart(oli);
+      return true;
+    }
+    return false;
+  }
+
+  // Enterキー押下時: 行全体が "---" 以上(ハイフン3つ以上のみ)ならHRに変換する。
+  function tryMarkdownEnterTrigger(e, root) {
+    var sel = global.getSelection();
+    if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return false;
+    var range = sel.getRangeAt(0);
+    var block = getBlockElement(range.startContainer, root);
+    if (block === root) return false;
+    var text = (block.textContent || '').trim();
+    if (!/^-{3,}$/.test(text)) return false;
+
+    e.preventDefault();
+    var hr = document.createElement('hr');
+    var nextBlock = document.createElement('div');
+    nextBlock.innerHTML = '<br>';
+    replaceBlockWithElement(block, hr);
+    hr.parentNode.insertBefore(nextBlock, hr.nextSibling);
+    placeCaretAtStart(nextBlock);
+    return true;
+  }
+
   function tableToMarkdown(table, warnings) {
     var rows = getDirectRows(table);
     if (rows.length === 0) {
@@ -212,14 +427,14 @@
 
     if (isListFormat) {
       // ---- 一覧表形式: 1行目=見出し行、2行目以降=各レコード ----
-      var headers = firstRowCells.map(textOf);
+      var headers = firstRowCells.map(inlineText);
       for (var i = 1; i < rows.length; i++) {
         var cells = Array.from(rows[i].cells);
         if (cells.length === 0) continue;
 
         var offset = 0;
         if (cells[0].tagName.toLowerCase() === 'th') {
-          lines.push('- ' + textOf(cells[0]));
+          lines.push('- ' + inlineText(cells[0]));
           offset = 1;
         } else {
           warnings.push('一覧表形式の' + (i + 1) + '行目の先頭列がTHではありません。');
@@ -233,7 +448,7 @@
           }
           var indent = offset ? '  ' : '';
           lines.push(indent + '- ' + header);
-          lines.push(indent + '  - ' + textOf(cells[j]));
+          lines.push(indent + '  - ' + inlineText(cells[j]));
         }
       }
     } else {
@@ -242,7 +457,7 @@
         var pendingTH = null;
         Array.from(row.cells).forEach(function (cell, cIdx) {
           var tag = cell.tagName.toLowerCase();
-          var text = textOf(cell);
+          var text = inlineText(cell);
           if (tag === 'th') {
             lines.push('- ' + text);
             pendingTH = text;
@@ -261,6 +476,35 @@
     return lines.join('\n');
   }
 
+  // ==============================================================
+  // リスト(ul/ol) → Markdown。Tab/Shift+Tabで作られるネストにも対応する。
+  // ==============================================================
+  function listToMarkdown(listNode, depth) {
+    var lines = [];
+    var isOrdered = listNode.tagName.toLowerCase() === 'ol';
+    var indent = '  '.repeat(depth);
+    var index = 1;
+    Array.from(listNode.children).forEach(function (li) {
+      if (li.tagName.toLowerCase() !== 'li') return;
+      var nestedLists = [];
+      var inlineParts = '';
+      Array.from(li.childNodes).forEach(function (child) {
+        if (child.nodeType === 1 && /^(UL|OL)$/.test(child.tagName)) {
+          nestedLists.push(child);
+        } else if (child.nodeType === 3) {
+          inlineParts += child.textContent;
+        } else if (child.nodeType === 1) {
+          inlineParts += inlineToMarkdown(child);
+        }
+      });
+      var label = inlineParts.replace(/\s+/g, ' ').trim();
+      lines.push(indent + (isOrdered ? (index + '. ') : '- ') + label);
+      nestedLists.forEach(function (nested) { lines.push(listToMarkdown(nested, depth + 1)); });
+      index++;
+    });
+    return lines.join('\n');
+  }
+
   function nodeToMarkdown(node, lines, warnings) {
     if (node.nodeType === 3) { // TEXT_NODE
       var t = textOf(node);
@@ -272,12 +516,12 @@
     var tag = node.tagName.toLowerCase();
 
     if (/^h[1-6]$/.test(tag)) {
-      lines.push('#'.repeat(Number(tag[1])) + ' ' + textOf(node));
+      lines.push('#'.repeat(Number(tag[1])) + ' ' + inlineText(node));
       lines.push('');
       return;
     }
     if (tag === 'blockquote') {
-      var quoted = textOf(node).split(/\n+/).map(function (l) { return '> ' + l; }).join('\n');
+      var quoted = inlineText(node).split(/\n+/).map(function (l) { return '> ' + l; }).join('\n');
       lines.push(quoted);
       lines.push('');
       return;
@@ -288,12 +532,11 @@
       return;
     }
     if (tag === 'ul' || tag === 'ol') {
-      Array.from(node.children).forEach(function (li, idx) {
-        lines.push((tag === 'ul' ? '- ' : (idx + 1) + '. ') + textOf(li));
-      });
+      lines.push(listToMarkdown(node, 0));
       lines.push('');
       return;
     }
+    if (tag === 'hr') { lines.push('---'); lines.push(''); return; }
     if (tag === 'br') { lines.push(''); return; }
     if (tag === 'script' || tag === 'style') { return; }
     if (tag === 'img') {
@@ -303,16 +546,22 @@
       lines.push('');
       return;
     }
+    if (tag === 'a') {
+      lines.push('[' + inlineText(node) + '](' + (node.getAttribute('href') || '') + ')');
+      lines.push('');
+      return;
+    }
 
-    // 見出し/表/引用/リスト/画像を子に含む場合は再帰、それ以外は本文としてそのまま出力
+    // 見出し/表/引用/リスト/HRを子に含む場合は再帰、それ以外は本文としてそのまま出力
+    // (img/aはinlineToMarkdownが文中でそのまま扱えるため、ここでは特別扱いしない)
     var hasBlockChild = Array.from(node.children).some(function (c) {
       var t2 = c.tagName.toLowerCase();
-      return /^h[1-6]$/.test(t2) || ['table', 'blockquote', 'ul', 'ol', 'img'].indexOf(t2) !== -1;
+      return /^h[1-6]$/.test(t2) || ['table', 'blockquote', 'ul', 'ol', 'hr'].indexOf(t2) !== -1;
     });
     if (hasBlockChild) {
       Array.from(node.childNodes).forEach(function (child) { nodeToMarkdown(child, lines, warnings); });
     } else {
-      var text = textOf(node);
+      var text = inlineText(node);
       if (text) { lines.push(text); lines.push(''); }
     }
   }
@@ -447,6 +696,8 @@
       '.report-engine-modal{background:#fff;border-radius:10px;padding:24px;min-width:260px;' +
       'box-shadow:0 8px 24px rgba(0,0,0,.25);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}' +
       '.report-engine-modal h2{margin:0 0 16px;font-size:15px;color:#111827;font-weight:600;}' +
+      '.report-engine-modal .report-engine-input{display:block;width:260px;box-sizing:border-box;' +
+      'padding:8px 10px;margin:0 0 10px;border:1px solid #d1d5db;border-radius:6px;font-size:14px;}' +
       '.report-engine-modal .choices{display:flex;flex-direction:column;gap:8px;}' +
       '.report-engine-modal .choices button{padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;' +
       'background:#f9fafb;font-size:14px;cursor:pointer;text-align:left;}' +
@@ -482,12 +733,29 @@
     imgBtn.textContent = '画像を挿入';
     imgBtn.addEventListener('click', function () { fileInput.click(); });
 
+    var attachInput = document.createElement('input');
+    attachInput.type = 'file';
+    attachInput.style.display = 'none';
+    attachInput.addEventListener('change', function () {
+      var file = attachInput.files && attachInput.files[0];
+      attachInput.value = '';
+      if (file) handleAttachmentFile(file);
+    });
+
+    var attachBtn = document.createElement('button');
+    attachBtn.type = 'button';
+    attachBtn.className = 'insert-img';
+    attachBtn.textContent = 'ファイルを添付';
+    attachBtn.addEventListener('click', function () { attachInput.click(); });
+
     var msg = document.createElement('span');
     msg.className = 'report-engine-msg';
 
     bar.appendChild(saveBtn);
     bar.appendChild(imgBtn);
     bar.appendChild(fileInput);
+    bar.appendChild(attachBtn);
+    bar.appendChild(attachInput);
     bar.appendChild(msg);
     document.body.insertBefore(bar, document.body.firstChild);
 
@@ -497,6 +765,7 @@
     els.bar = bar;
     els.saveBtn = saveBtn;
     els.imgBtn = imgBtn;
+    els.attachBtn = attachBtn;
     els.msg = msg;
   }
 
@@ -507,6 +776,23 @@
       insertImageDataUrl(root, dataUrl);
     }).catch(function () {
       showMessage('画像の読み込みに失敗しました。', 'error');
+    });
+  }
+
+  var LARGE_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
+
+  function handleAttachmentFile(file) {
+    var root = document.getElementById(CONTAINER_ID);
+    if (!root) return Promise.resolve();
+    return readFileAsDataURL(file).then(function (dataUrl) {
+      insertAttachmentFile(root, file, dataUrl);
+      if (file.size > LARGE_ATTACHMENT_BYTES) {
+        showMessage('添付ファイル「' + file.name + '」のサイズが大きいため(' + humanFileSize(file.size) + ')、保存ファイルも大きくなります。', 'error');
+      } else {
+        clearMessage();
+      }
+    }).catch(function () {
+      showMessage('ファイルの読み込みに失敗しました。', 'error');
     });
   }
 
@@ -529,6 +815,75 @@
   function clearMessage() {
     els.msg.textContent = '';
     els.msg.className = 'report-engine-msg';
+  }
+
+  // Ctrl+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
+  // モーダルを開くとcontentEditable内の選択が失われるため、開く前にRangeを複製して保持しておく。
+  function openLinkDialog(root) {
+    var sel = global.getSelection();
+    var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
+    var hasSelection = !!(savedRange && !savedRange.collapsed);
+
+    var overlay = document.createElement('div');
+    overlay.className = 'report-engine-modal-overlay';
+    var modal = document.createElement('div');
+    modal.className = 'report-engine-modal';
+
+    var heading = document.createElement('h2');
+    heading.textContent = 'リンクを挿入';
+    modal.appendChild(heading);
+
+    var urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'report-engine-input';
+    urlInput.placeholder = 'https://example.com';
+    modal.appendChild(urlInput);
+
+    var textInput = null;
+    if (!hasSelection) {
+      textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'report-engine-input';
+      textInput.placeholder = '表示テキスト';
+      modal.appendChild(textInput);
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'choices';
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.textContent = 'リンクを挿入';
+    okBtn.addEventListener('click', function () {
+      var url = urlInput.value.trim();
+      if (!url) { urlInput.focus(); return; }
+      if (sel) {
+        sel.removeAllRanges();
+        if (savedRange) sel.addRange(savedRange);
+      }
+      if (hasSelection) {
+        document.execCommand('createLink', false, url);
+      } else {
+        var label = escapeHtml(textInput.value.trim() || url);
+        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + label + '</a>&nbsp;');
+      }
+      document.body.removeChild(overlay);
+    });
+    actions.appendChild(okBtn);
+    modal.appendChild(actions);
+
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cancel';
+    cancel.textContent = 'キャンセル';
+    cancel.addEventListener('click', function () { document.body.removeChild(overlay); });
+    modal.appendChild(cancel);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', function (e) {
+      if (e.target === overlay) document.body.removeChild(overlay);
+    });
+    document.body.appendChild(overlay);
+    urlInput.focus();
   }
 
   function openFormatChooser() {
@@ -603,7 +958,7 @@
     }
     if (format === 'draft') {
       var draftHtml = buildDraftHTML();
-      ReportEngine.downloadBlob(draftHtml, base + '_下書き.html', 'text/html');
+      ReportEngine.downloadBlob(draftHtml, 'wip_' + base + '.html', 'text/html');
       clearMessage();
     }
   }
@@ -631,8 +986,36 @@
         openFormatChooser();
         return;
       }
-      if (e.key === 'Tab' && !e.shiftKey && root) {
-        handleTabInTable(e, root);
+      if (!root) return;
+
+      // 選択範囲への書式ショートカット(すべて Ctrl+Shift+...)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+        if (key === 'b') { e.preventDefault(); document.execCommand('bold'); return; }
+        if (key === 'y') { e.preventDefault(); document.execCommand('italic'); return; }
+        if (key === 'u') { e.preventDefault(); document.execCommand('underline'); return; }
+        if (key === 'k') { e.preventDefault(); openLinkDialog(root); return; }
+        if (e.key === '+' || e.key === '=') { e.preventDefault(); adjustFontSize(root, 2); return; }
+        if (e.key === '-' || e.key === '_') { e.preventDefault(); adjustFontSize(root, -2); return; }
+      }
+
+      // Tab: 表のセル間移動/行追加、または リストのレベルUP・DOWN
+      if (e.key === 'Tab') {
+        if (getCurrentCell(root)) {
+          if (!e.shiftKey) handleTabInTable(e, root);
+          return;
+        }
+        var li = getCurrentListItem(root);
+        if (li) {
+          e.preventDefault();
+          document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+        }
+        return;
+      }
+
+      // 行頭でのMarkdown風オートフォーマット(修飾キー無しの場合のみ)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+        if (e.key === ' ') { tryMarkdownSpaceTrigger(e, root); return; }
+        if (e.key === 'Enter') { tryMarkdownEnterTrigger(e, root); return; }
       }
     });
 
@@ -673,6 +1056,14 @@
   ReportEngine.readFileAsDataURL = readFileAsDataURL;
   ReportEngine.insertImageDataUrl = insertImageDataUrl;
   ReportEngine.handleImageFile = handleImageFile;
+  ReportEngine.handleAttachmentFile = handleAttachmentFile;
+  ReportEngine.humanFileSize = humanFileSize;
+  ReportEngine.adjustFontSize = adjustFontSize;
+  ReportEngine.openLinkDialog = openLinkDialog;
+  ReportEngine.tryMarkdownSpaceTrigger = tryMarkdownSpaceTrigger;
+  ReportEngine.tryMarkdownEnterTrigger = tryMarkdownEnterTrigger;
+  ReportEngine.getCurrentListItem = getCurrentListItem;
+  ReportEngine.inlineToMarkdown = inlineToMarkdown;
   ReportEngine._internal = {
     showMessage: showMessage,
     clearMessage: clearMessage,
