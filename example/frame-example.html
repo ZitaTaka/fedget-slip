@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>frame-example</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+  }
+  iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .frame-example-message {
+    margin: 0;
+    padding: 16px;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #374151;
+  }
+</style>
+</head>
+<body>
+<iframe id="frame" title="frame-example"></iframe>
+<script>
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var url = params.get('url');
+    var frame = document.getElementById('frame');
+    if (url) {
+      frame.src = url;
+    } else {
+      frame.remove();
+      var msg = document.createElement('p');
+      msg.className = 'frame-example-message';
+      msg.textContent = 'URLが指定されていません。?url=https://example.com のように指定してください。';
+      document.body.appendChild(msg);
+    }
+  })();
+</script>
+</body>
+</html>
