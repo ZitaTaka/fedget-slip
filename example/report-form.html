@@ -329,6 +329,11 @@ body {
         out += '<span style="font-size:' + child.style.fontSize + '">' + inlineToMarkdown(child) + '</span>';
         return;
       }
+      if (t === 'ul' || t === 'ol') {
+        // 表のセルなどインライン文脈中のリストは、崩れないようインラインHTMLとしてそのまま埋め込む
+        out += child.outerHTML;
+        return;
+      }
       out += inlineToMarkdown(child); // その他の未対応インライン要素は中身だけ展開
     });
     return out;
@@ -459,14 +464,18 @@ body {
   // ("# "→見出し、"* "/"- "→箇条書き、"1. "→番号付きリスト、"---"+Enter→区切り線)
   // ==============================================================
 
-  // caretのある「行」に相当するブロック要素(div/p/li/見出し/blockquote)を探す。
+  // caretのある「行」に相当するブロック要素(div/p/li/見出し/blockquote/表のセル)を探す。
   // 見つからない場合はroot自体を返す(=対象外として扱う)。
   function getBlockElement(node, root) {
     while (node && node !== root) {
-      if (node.nodeType === 1 && /^(DIV|P|LI|H1|H2|H3|H4|H5|H6|BLOCKQUOTE)$/.test(node.tagName)) return node;
+      if (node.nodeType === 1 && /^(DIV|P|LI|H1|H2|H3|H4|H5|H6|BLOCKQUOTE|TD|TH)$/.test(node.tagName)) return node;
       node = node.parentNode;
     }
     return root;
+  }
+
+  function isCellElement(el) {
+    return !!(el && el.nodeType === 1 && (el.tagName === 'TD' || el.tagName === 'TH'));
   }
 
   function textBeforeCaretInBlock(block, caretNode, caretOffset) {
@@ -476,8 +485,21 @@ body {
     return range.toString();
   }
 
-  function replaceBlockWithElement(block, newEl) {
-    block.parentNode.replaceChild(newEl, block);
+  // blockを新しい要素(群)に置き換える。blockが表のセル(TD/TH)の場合はセル自体は
+  // 残したまま中身だけを差し替える(セルをulなどで直接置き換えると表の構造が壊れるため)。
+  // newElementsは配列: 先頭がblockの代わりになり、以降はその直後に続けて挿入される。
+  function replaceBlockWith(block, newElements) {
+    if (isCellElement(block)) {
+      block.innerHTML = '';
+      newElements.forEach(function (el) { block.appendChild(el); });
+      return;
+    }
+    block.parentNode.replaceChild(newElements[0], block);
+    var ref = newElements[0];
+    for (var i = 1; i < newElements.length; i++) {
+      ref.parentNode.insertBefore(newElements[i], ref.nextSibling);
+      ref = newElements[i];
+    }
   }
 
   // スペースキー押下時: "# "見出し/"* ","- "箇条書き/"1. "番号付きリストへの変換を試みる。
@@ -495,7 +517,7 @@ body {
       e.preventDefault();
       var h = document.createElement('h' + headerMatch[1].length);
       h.innerHTML = '<br>'; // 空要素でもカーソルを置けるように
-      replaceBlockWithElement(block, h);
+      replaceBlockWith(block, [h]);
       placeCaretAtStart(h);
       return true;
     }
@@ -505,7 +527,7 @@ body {
       var uli = document.createElement('li');
       uli.innerHTML = '<br>';
       ul.appendChild(uli);
-      replaceBlockWithElement(block, ul);
+      replaceBlockWith(block, [ul]);
       placeCaretAtStart(uli);
       return true;
     }
@@ -515,7 +537,7 @@ body {
       var oli = document.createElement('li');
       oli.innerHTML = '<br>';
       ol.appendChild(oli);
-      replaceBlockWithElement(block, ol);
+      replaceBlockWith(block, [ol]);
       placeCaretAtStart(oli);
       return true;
     }
@@ -536,8 +558,7 @@ body {
     var hr = document.createElement('hr');
     var nextBlock = document.createElement('div');
     nextBlock.innerHTML = '<br>';
-    replaceBlockWithElement(block, hr);
-    hr.parentNode.insertBefore(nextBlock, hr.nextSibling);
+    replaceBlockWith(block, [hr, nextBlock]);
     placeCaretAtStart(nextBlock);
     return true;
   }
@@ -1138,16 +1159,17 @@ body {
         if (e.key === '-' || e.key === '_') { e.preventDefault(); adjustFontSize(root, -2); return; }
       }
 
-      // Tab: 表のセル間移動/行追加、または リストのレベルUP・DOWN
+      // Tab: リストのレベルUP・DOWNを優先(表のセル内に作られたリストも含む)、
+      // リスト内でなければ表のセル間移動/行追加。
       if (e.key === 'Tab') {
-        if (getCurrentCell(root)) {
-          if (!e.shiftKey) handleTabInTable(e, root);
-          return;
-        }
         var li = getCurrentListItem(root);
         if (li) {
           e.preventDefault();
           document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+          return;
+        }
+        if (getCurrentCell(root)) {
+          if (!e.shiftKey) handleTabInTable(e, root);
         }
         return;
       }
