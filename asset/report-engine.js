@@ -20,6 +20,8 @@
  *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
  *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
  *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   7b. document.title(=<title>タグ・ブラウザタブ)は、常に最初のH1の内容に自動で同期する
+ *      (編集するたびに更新され、HTML保存時のtitleタグにも反映される)。
  *   8. Markdown風のショートカット/オートフォーマットに対応する:
  *      選択中のテキストに Ctrl+Shift+B(太字)/Ctrl+Shift+Y(斜体)/Ctrl+Shift+U(下線)/
  *      Ctrl+Shift+ +・Ctrl+Shift+ -(文字サイズを2pt刻みで増減)/Ctrl+Shift+K(リンク挿入、URL入力フォーム付き)。
@@ -662,10 +664,21 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   };
 
+  // 文書内の最初のH1のテキストを返す(無ければ現在のdocument.titleにフォールバック)
+  function getHeadingText(root) {
+    var h1 = root && root.querySelector('h1');
+    return (h1 && textOf(h1)) || document.title || 'report';
+  }
+
   function getBaseFilename() {
     var root = document.getElementById(CONTAINER_ID);
-    var h1 = root && root.querySelector('h1');
-    return sanitizeFilename((h1 && textOf(h1)) || document.title);
+    return sanitizeFilename(getHeadingText(root));
+  }
+
+  // document.title(=ブラウザタブや<title>タグ)を、最初のH1の内容に同期させる。
+  function syncTitleFromHeading(root) {
+    var text = getHeadingText(root);
+    if (text) document.title = text;
   }
 
   // ==============================================================
@@ -724,7 +737,8 @@
       'background:#f9fafb;font-size:14px;cursor:pointer;text-align:left;}' +
       '.report-engine-modal .choices button:hover{background:#eef2ff;border-color:#6366f1;}' +
       '.report-engine-modal .cancel{margin-top:14px;background:none;border:none;color:#6b7280;' +
-      'cursor:pointer;font-size:13px;padding:0;}';
+      'cursor:pointer;font-size:13px;padding:0;}' +
+      '#' + CONTAINER_ID + ' [id]{scroll-margin-top:var(--report-engine-bar-h, 56px);}';
     document.head.appendChild(style);
   }
 
@@ -782,6 +796,8 @@
 
     // 本文がバーの下に隠れないよう余白を確保
     document.body.style.paddingTop = bar.offsetHeight + 'px';
+    // ページ内リンクでジャンプした見出し等がバーの下に隠れないよう、CSS変数でバーの高さを共有する
+    document.documentElement.style.setProperty('--report-engine-bar-h', bar.offsetHeight + 'px');
 
     els.bar = bar;
     els.saveBtn = saveBtn;
@@ -840,6 +856,22 @@
 
   // Ctrl+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
   // モーダルを開くとcontentEditable内の選択が失われるため、開く前にRangeを複製して保持しておく。
+  var HEADING_ID_PREFIX = 'h-';
+
+  // rootの中で使われていない連番のidを見出しに割り当てる(まだ無ければ)。
+  function ensureHeadingId(root, h) {
+    if (h.id) return h.id;
+    var n = 1;
+    while (root.querySelector('#' + HEADING_ID_PREFIX + n)) n++;
+    h.id = HEADING_ID_PREFIX + n;
+    return h.id;
+  }
+
+  // Ctrl+Shift+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
+  // 見出しが1つ以上あれば「見出しへのリンク」選択欄も出し、選んだ見出しに自動でidを割り当てて
+  // URL欄に "#id" を入力する(手作業でページ内リンクの飛び先を用意しなくてよいようにするため)。
+  // "#"で始まるURL(ページ内アンカー)には target="_blank" を付けない(別タブで開くと編集中の
+  // 内容が引き継がれず、ジャンプしないように見えてしまうため)。
   function openLinkDialog(root) {
     var sel = global.getSelection();
     var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
@@ -854,10 +886,33 @@
     heading.textContent = 'リンクを挿入';
     modal.appendChild(heading);
 
+    var headings = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,h6'));
     var urlInput = document.createElement('input');
     urlInput.type = 'text';
     urlInput.className = 'report-engine-input';
-    urlInput.placeholder = 'https://example.com';
+    urlInput.placeholder = 'https://example.com または #見出しへのリンク';
+
+    if (headings.length) {
+      var headingSelect = document.createElement('select');
+      headingSelect.className = 'report-engine-input';
+      var placeholderOpt = document.createElement('option');
+      placeholderOpt.value = '';
+      placeholderOpt.textContent = '(任意)見出しへのリンクを選択...';
+      headingSelect.appendChild(placeholderOpt);
+      headings.forEach(function (h, idx) {
+        var opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = h.tagName + ': ' + (h.textContent || '').trim().slice(0, 40);
+        headingSelect.appendChild(opt);
+      });
+      headingSelect.addEventListener('change', function () {
+        if (headingSelect.value === '') return;
+        var h = headings[Number(headingSelect.value)];
+        urlInput.value = '#' + ensureHeadingId(root, h);
+      });
+      modal.appendChild(headingSelect);
+    }
+
     modal.appendChild(urlInput);
 
     var textInput = null;
@@ -877,15 +932,30 @@
     okBtn.addEventListener('click', function () {
       var url = urlInput.value.trim();
       if (!url) { urlInput.focus(); return; }
+      var isAnchor = url.charAt(0) === '#';
+
       if (sel) {
         sel.removeAllRanges();
         if (savedRange) sel.addRange(savedRange);
       }
+
       if (hasSelection) {
-        document.execCommand('createLink', false, url);
+        var range = sel.getRangeAt(0);
+        var contents = range.extractContents();
+        var a = document.createElement('a');
+        a.href = url;
+        if (!isAnchor) { a.target = '_blank'; a.rel = 'noopener'; }
+        a.appendChild(contents);
+        range.insertNode(a);
+        var after = document.createRange();
+        after.setStartAfter(a);
+        after.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(after);
       } else {
         var label = escapeHtml(textInput.value.trim() || url);
-        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + label + '</a>&nbsp;');
+        var attrs = isAnchor ? '' : ' target="_blank" rel="noopener"';
+        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '"' + attrs + '>' + label + '</a>&nbsp;');
       }
       document.body.removeChild(overlay);
     });
@@ -959,6 +1029,7 @@
       return;
     }
     classifyTables(root);
+    syncTitleFromHeading(root);
     var base = getBaseFilename();
 
     if (format === 'markdown') {
@@ -968,7 +1039,7 @@
       return;
     }
     if (format === 'html') {
-      var htmlRes = containerToStandaloneHTML(root, base);
+      var htmlRes = containerToStandaloneHTML(root, getHeadingText(root));
       ReportEngine.downloadBlob(htmlRes.html, base + '.html', 'text/html');
       htmlRes.warnings.length ? showMessage(htmlRes.warnings.join(' / '), 'error') : clearMessage();
       return;
@@ -996,6 +1067,8 @@
     if (root) {
       root.setAttribute('contenteditable', 'true');
       classifyTables(root);
+      syncTitleFromHeading(root); // 最初のH1の内容を<title>/document.titleに反映
+      root.addEventListener('input', function () { syncTitleFromHeading(root); });
     } else {
       showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。id="' + CONTAINER_ID + '" の要素を用意してください。', 'error');
     }
@@ -1072,6 +1145,8 @@
   ReportEngine.containerToStandaloneHTML = containerToStandaloneHTML;
   ReportEngine.buildDraftHTML = buildDraftHTML;
   ReportEngine.classifyTables = classifyTables;
+  ReportEngine.getHeadingText = getHeadingText;
+  ReportEngine.syncTitleFromHeading = syncTitleFromHeading;
   ReportEngine.handleTabInTable = handleTabInTable;
   ReportEngine.performSave = performSave;
   ReportEngine.openFormatChooser = openFormatChooser;
@@ -1082,6 +1157,7 @@
   ReportEngine.humanFileSize = humanFileSize;
   ReportEngine.adjustFontSize = adjustFontSize;
   ReportEngine.openLinkDialog = openLinkDialog;
+  ReportEngine.ensureHeadingId = ensureHeadingId;
   ReportEngine.tryMarkdownSpaceTrigger = tryMarkdownSpaceTrigger;
   ReportEngine.tryMarkdownEnterTrigger = tryMarkdownEnterTrigger;
   ReportEngine.getCurrentListItem = getCurrentListItem;
