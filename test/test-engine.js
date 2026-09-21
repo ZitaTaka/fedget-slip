@@ -648,28 +648,95 @@ test('adjustFontSizeは最小値6ptを下回らない', async () => {
   assert.strictEqual(span.style.fontSize, '6pt');
 });
 
-test('Ctrl+K: テキスト選択中はダイアログにURL欄のみ表示され、OKでcreateLinkが呼ばれる', async () => {
+test('Ctrl+K: テキスト選択中に外部URLでリンク化すると target=_blank が付く', async () => {
   const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
   const root = dom.window.document.getElementById('report-content');
   const p = root.querySelector('p');
   selectTextIn(dom, p.firstChild, 0, 5);
 
-  let called = null;
-  dom.window.document.execCommand = (cmd, ui, value) => { called = { cmd, value }; return true; };
-
   dom.window.ReportEngine.openLinkDialog(root);
   const modal = dom.window.document.querySelector('.report-engine-modal');
   assert.ok(modal, 'ダイアログが開いていない');
-  assert.strictEqual(modal.querySelectorAll('input[type="text"]').length, 1, '選択中はURL欄のみのはず');
+  assert.strictEqual(modal.querySelectorAll('input[type="text"]').length, 1, '選択中はURL欄のみのはず(見出しが無いため選択欄も無し)');
 
   const urlInput = modal.querySelector('.report-engine-input');
   urlInput.value = 'https://example.com/';
   modal.querySelectorAll('.choices button')[0].click();
 
-  assert.ok(called, 'execCommandが呼ばれていない');
-  assert.strictEqual(called.cmd, 'createLink');
-  assert.strictEqual(called.value, 'https://example.com/');
+  const a = p.querySelector('a');
+  assert.ok(a, 'aタグが挿入されていない');
+  assert.strictEqual(a.getAttribute('href'), 'https://example.com/');
+  assert.strictEqual(a.getAttribute('target'), '_blank', '外部リンクにtarget=_blankが付いていない');
+  assert.strictEqual(a.getAttribute('rel'), 'noopener');
+  assert.strictEqual(a.textContent, 'hello', '選択していたテキストがリンクの中身になっていない');
   assert.ok(!dom.window.document.querySelector('.report-engine-modal-overlay'), 'ダイアログが閉じていない');
+});
+
+test('Ctrl+K: ページ内アンカー(#〜)へのリンクには target=_blank を付けない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p><h2 id="h-1">見出し</h2></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+
+  dom.window.ReportEngine.openLinkDialog(root);
+  const modal = dom.window.document.querySelector('.report-engine-modal');
+  const urlInput = modal.querySelector('input.report-engine-input');
+  urlInput.value = '#h-1';
+  modal.querySelectorAll('.choices button')[0].click();
+
+  const a = p.querySelector('a');
+  assert.ok(a, 'aタグが挿入されていない');
+  assert.strictEqual(a.getAttribute('href'), '#h-1');
+  assert.strictEqual(a.getAttribute('target'), null, 'ページ内アンカーなのにtarget=_blankが付いている');
+  assert.strictEqual(a.getAttribute('rel'), null);
+});
+
+test('Ctrl+K: 見出しがあれば選択ドロップダウンが出て、選ぶとURL欄に#idが入りその見出しにidが振られる', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p><h1>導入</h1><h2>詳細</h2></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+
+  dom.window.ReportEngine.openLinkDialog(root);
+  const modal = dom.window.document.querySelector('.report-engine-modal');
+  const select = modal.querySelector('select.report-engine-input');
+  assert.ok(select, '見出しがあるのに選択ドロップダウンが無い');
+  assert.strictEqual(select.querySelectorAll('option').length, 3, 'プレースホルダー含め3つの選択肢のはず(見出し2つ+プレースホルダー)');
+
+  select.value = '1'; // 2番目の見出し("詳細")
+  select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+  const h2 = root.querySelector('h2');
+  const urlInput = modal.querySelector('input.report-engine-input');
+  assert.strictEqual(urlInput.value, '#' + h2.id, 'URL欄に見出しのidが自動入力されていない');
+  assert.ok(h2.id, '見出しにidが振られていない');
+});
+
+test('Ctrl+K: 見出しが無ければ選択ドロップダウンは表示されない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>hello</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const p = root.querySelector('p');
+  selectTextIn(dom, p.firstChild, 0, 5);
+  dom.window.ReportEngine.openLinkDialog(root);
+  const modal = dom.window.document.querySelector('.report-engine-modal');
+  assert.ok(!modal.querySelector('select'), '見出しが無いのにドロップダウンが出ている');
+});
+
+test('ensureHeadingIdは既にidがあればそれを維持し、無ければh-連番を振る', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1 id="custom">A</h1><h2>B</h2></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const h1 = root.querySelector('h1');
+  const h2 = root.querySelector('h2');
+  assert.strictEqual(dom.window.ReportEngine.ensureHeadingId(root, h1), 'custom');
+  assert.strictEqual(dom.window.ReportEngine.ensureHeadingId(root, h2), 'h-1');
+});
+
+test('#report-content内の要素にscroll-margin-top用CSS変数が設定される', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1 id="x">t</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  assert.ok(root, 'root取得失敗');
+  const varValue = dom.window.document.documentElement.style.getPropertyValue('--report-engine-bar-h');
+  assert.ok(varValue, '--report-engine-bar-h が設定されていない');
 });
 
 test('Ctrl+K: 選択なしの場合はURL欄と表示テキスト欄が出て、リンクがinsertHTMLで挿入される', async () => {
@@ -957,6 +1024,50 @@ test('セル内のリストはMarkdown変換時にインラインHTMLとして�
   const root = dom.window.document.getElementById('report-content');
   const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
   assert.strictEqual(markdown, '- <ul><li>りんご</li><li>みかん</li></ul>');
+});
+
+// ------------------------------------------------------------------
+// 15. <title>/document.titleを最初のH1に同期
+// ------------------------------------------------------------------
+
+test('初期化時にdocument.titleが最初のH1の内容になる', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>月次売上報告書</h1></div>');
+  assert.strictEqual(dom.window.document.title, '月次売上報告書');
+});
+
+test('H1を編集(input発火)するとdocument.titleが追従する', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>旧タイトル</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const h1 = root.querySelector('h1');
+  h1.textContent = '新タイトル';
+  root.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  assert.strictEqual(dom.window.document.title, '新タイトル');
+});
+
+test('H1が無い場合はdocument.titleを変更しない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文のみ</p></div>');
+  const before = dom.window.document.title;
+  dom.window.ReportEngine.syncTitleFromHeading(dom.window.document.getElementById('report-content'));
+  assert.strictEqual(dom.window.document.title, before);
+});
+
+test('HTML保存の<title>タグは(ファイル名用の文字置換をしていない)生のH1テキストになる', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>Q1/Q2:報告書</h1></div>');
+  const root = dom.window.document.getElementById('report-content');
+  let called = null;
+  dom.window.ReportEngine.downloadBlob = (content, filename, mime) => { called = { content, filename, mime }; };
+
+  dom.window.ReportEngine.performSave('html');
+
+  assert.ok(called.content.includes('<title>Q1/Q2:報告書</title>'), '<title>タグにH1の生テキストが使われていない: ' + called.content);
+  assert.strictEqual(called.filename, 'Q1_Q2_報告書.html', 'ファイル名側は従来どおりサニタイズされているべき');
+});
+
+test('getHeadingTextはH1が無ければdocument.titleにフォールバックする', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  dom.window.document.title = '既定タイトル';
+  const root = dom.window.document.getElementById('report-content');
+  assert.strictEqual(dom.window.ReportEngine.getHeadingText(root), '既定タイトル');
 });
 
 // ------------------------------------------------------------------
