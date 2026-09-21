@@ -861,6 +861,105 @@ test('表のセル内の太字もMarkdown変換に反映される', async () => 
 });
 
 // ------------------------------------------------------------------
+// 14. 表のセル内でのMarkdown風オートフォーマット(bullet/number list)
+// ------------------------------------------------------------------
+
+test('表のセル内で"* "を入力すると箇条書き(ul>li)に変換される(セル自体は壊れない)', async () => {
+  const dom = await makeEnv('<div id="report-content"><table><tr><td>*</td></tr></table></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const td = root.querySelector('td');
+  setCaretAtEnd(dom, td.firstChild);
+
+  const handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+
+  // tdが残ったまま中身だけliに変わっていること(tdごと置き換わっていない)
+  const tdAfter = root.querySelector('table tr td');
+  assert.ok(tdAfter, 'tdが無くなってしまっている(表の構造が壊れている)');
+  assert.ok(tdAfter.querySelector('ul > li'), 'セル内が箇条書きに変換されていない: ' + root.innerHTML);
+});
+
+test('表のセル内で"1. "を入力すると番号付きリスト(ol>li)に変換される', async () => {
+  const dom = await makeEnv('<div id="report-content"><table><tr><th>1.</th></tr></table></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const th = root.querySelector('th');
+  setCaretAtEnd(dom, th.firstChild);
+
+  const handled = dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+
+  const thAfter = root.querySelector('table tr th');
+  assert.ok(thAfter, 'thが無くなってしまっている(表の構造が壊れている)');
+  assert.ok(thAfter.querySelector('ol > li'), 'セル内が番号付きリストに変換されていない: ' + root.innerHTML);
+});
+
+test('表のセル内で"# "を入力すると見出しに変換される(セルは維持)', async () => {
+  const dom = await makeEnv('<div id="report-content"><table><tr><td>#</td></tr></table></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const td = root.querySelector('td');
+  setCaretAtEnd(dom, td.firstChild);
+
+  dom.window.ReportEngine.tryMarkdownSpaceTrigger(fakeTabEvent(), root);
+  const tdAfter = root.querySelector('table tr td');
+  assert.ok(tdAfter, 'tdが無くなってしまっている');
+  assert.ok(tdAfter.querySelector('h1'), 'セル内が見出しに変換されていない: ' + root.innerHTML);
+});
+
+test('表のセル内で"---"+Enterを押すとセル内にhrが挿入される(セルは維持)', async () => {
+  const dom = await makeEnv('<div id="report-content"><table><tr><td>----</td></tr></table></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const td = root.querySelector('td');
+  setCaretAtEnd(dom, td.firstChild);
+
+  const handled = dom.window.ReportEngine.tryMarkdownEnterTrigger(fakeTabEvent(), root);
+  assert.strictEqual(handled, true);
+  const tdAfter = root.querySelector('table tr td');
+  assert.ok(tdAfter, 'tdが無くなってしまっている');
+  assert.ok(tdAfter.querySelector('hr'), 'セル内にhrが挿入されていない: ' + root.innerHTML);
+});
+
+test('表のセル内に作った箇条書きの項目内でTabを押すとindent(表の行追加は起きない)', async () => {
+  const html = '<div id="report-content"><table><tr><td><ul><li>item</li></ul></td></tr></table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+  const li = root.querySelector('li');
+  setCaretAtEnd(dom, li.firstChild);
+
+  const calls = [];
+  dom.window.document.execCommand = (cmd) => { calls.push(cmd); return true; };
+
+  const tabEv = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(tabEv);
+
+  assert.deepStrictEqual(calls, ['indent'], 'セル内のリストでTabがindentを呼んでいない');
+  assert.strictEqual(table.rows.length, 1, '表に行が追加されてしまっている(indentが優先されるべき)');
+});
+
+test('通常どおり、リストが無いセルでのTabは引き続き表の行追加として動作する', async () => {
+  const html = '<div id="report-content"><table><tr><th>商品名</th><th>数量</th></tr>' +
+    '<tr><th>商品A</th><td>10</td></tr></table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const table = root.querySelector('table');
+  const lastRow = table.rows[table.rows.length - 1];
+  setCaretAtEnd(dom, lastRow.cells[lastRow.cells.length - 1].firstChild);
+
+  const tabEv = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+  dom.window.document.dispatchEvent(tabEv);
+
+  assert.strictEqual(table.rows.length, 3, '表の行追加が動作していない(通常のセルではTab=行追加のはず)');
+});
+
+test('セル内のリストはMarkdown変換時にインラインHTMLとして保持される(崩れない)', async () => {
+  const html = '<div id="report-content"><table><tr><td><ul><li>りんご</li><li>みかん</li></ul></td></tr></table></div>';
+  const dom = await makeEnv(html);
+  const root = dom.window.document.getElementById('report-content');
+  const { markdown } = dom.window.ReportEngine.containerToMarkdown(root);
+  assert.strictEqual(markdown, '- <ul><li>りんご</li><li>みかん</li></ul>');
+});
+
+// ------------------------------------------------------------------
 (async () => {
   for (const { name, fn } of tests) {
     try {
