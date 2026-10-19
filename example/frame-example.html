@@ -17,7 +17,7 @@ body {
 }
 
 #report-content {
-  max-width: 800px;
+  box-sizing: border-box;
   margin: 32px auto;
   padding: 40px 48px;
   background: #ffffff;
@@ -25,6 +25,22 @@ body {
   border-radius: 4px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   line-height: 1.7;
+}
+
+/* 画面の向きで帳票の幅を切り替える。
+   横長(PCなど): 画面いっぱいに広げる。縦長(スマホ・縦置きモニタなど): 幅の80%を使う。 */
+@media (orientation: landscape) {
+  #report-content {
+    width: auto;
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+}
+
+@media (orientation: portrait) {
+  #report-content {
+    width: 80%;
+  }
 }
 
 #report-content:focus {
