@@ -43,6 +43,15 @@ body {
   }
 }
 
+/* スマホなど小さい画面では、向きに関係なく幅いっぱいに使い、余白とパディングも詰める。 */
+@media (max-width: 600px) {
+  #report-content {
+    width: auto;
+    margin: 12px 8px;
+    padding: 24px 16px;
+  }
+}
+
 #report-content:focus {
   outline: 2px solid #3b6fd6;
   outline-offset: 4px;
