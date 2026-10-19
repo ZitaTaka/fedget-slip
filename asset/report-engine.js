@@ -20,6 +20,8 @@
  *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
  *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
  *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   7a. 内容を編集すると、メニューバーに「[未保存]」と表示される(いずれかの形式で保存すると消える)。
+ *      [未保存]のままタブを閉じる・別ページへ移動・再読み込みしようとすると、ブラウザの確認ダイアログが出る。
  *   7b. document.title(=<title>タグ・ブラウザタブ)は、常に最初のH1の内容に自動で同期する
  *      (編集するたびに更新され、HTML保存時のtitleタグにも反映される)。
  *   8. Markdown風のショートカット/オートフォーマットに対応する:
@@ -688,7 +690,7 @@
   function exportPDF(root, filename, onError) {
     if (typeof global.html2pdf === 'undefined') {
       onError('PDF出力ライブラリ(html2pdf.js)を読み込めませんでした。インターネット接続を確認してください。');
-      return;
+      return false;
     }
     var clone = root.cloneNode(true);
     clone.removeAttribute('contenteditable');
@@ -698,6 +700,7 @@
       html2canvas: { scale: 2 },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
     }).from(clone).save();
+    return true;
   }
 
   // ==============================================================
@@ -721,6 +724,7 @@
       '.report-engine-bar button.insert-img{cursor:pointer;border-radius:6px;padding:6px 16px;' +
       'background:transparent;color:#fff;font-size:14px;flex-shrink:0;border:1px solid #4b5a70;}' +
       '.report-engine-bar button.insert-img:hover{background:#2c374a;}' +
+      '.report-engine-status{flex-shrink:0;font-size:13px;font-weight:600;color:#fbbf24;}' +
       '.report-engine-msg{flex:1;min-height:1.2em;font-size:13px;color:#cbd3e1;}' +
       '.report-engine-msg.error{color:#ffb4b4;}' +
       '.report-engine-msg .close-msg{margin-left:8px;cursor:pointer;background:none;border:none;' +
@@ -783,6 +787,9 @@
     attachBtn.textContent = 'ファイルを添付';
     attachBtn.addEventListener('click', function () { attachInput.click(); });
 
+    var status = document.createElement('span');
+    status.className = 'report-engine-status';
+
     var msg = document.createElement('span');
     msg.className = 'report-engine-msg';
 
@@ -791,6 +798,7 @@
     bar.appendChild(fileInput);
     bar.appendChild(attachBtn);
     bar.appendChild(attachInput);
+    bar.appendChild(status);
     bar.appendChild(msg);
     document.body.insertBefore(bar, document.body.firstChild);
 
@@ -803,7 +811,52 @@
     els.saveBtn = saveBtn;
     els.imgBtn = imgBtn;
     els.attachBtn = attachBtn;
+    els.status = status;
     els.msg = msg;
+  }
+
+  // ==============================================================
+  // 保存ステータス([未保存]表示・離脱時の確認)
+  // ==============================================================
+
+  var dirty = false;
+
+  function setDirty(value) {
+    dirty = value;
+    if (els.status) els.status.textContent = dirty ? '[未保存]' : '';
+  }
+
+  function isDirty() {
+    return dirty;
+  }
+
+  // 帳票内のDOM変更を監視して[未保存]にする。
+  // キー入力だけでなく、画像・添付・リンク挿入や表の行追加などスクリプトによる変更も拾うため、
+  // inputイベントではなくMutationObserverを使う。
+  // ただし保存時の表のクラス分け(class)やページ内リンク用のid付与は内容の変更ではないので無視する。
+  var IGNORED_ATTRIBUTES = ['class', 'id', 'contenteditable'];
+
+  function watchChanges(root) {
+    if (typeof global.MutationObserver === 'undefined') {
+      root.addEventListener('input', function () { setDirty(true); });
+      return;
+    }
+    var observer = new global.MutationObserver(function (mutations) {
+      var changed = mutations.some(function (m) {
+        return m.type !== 'attributes' || IGNORED_ATTRIBUTES.indexOf(m.attributeName) === -1;
+      });
+      if (changed) setDirty(true);
+    });
+    observer.observe(root, { childList: true, characterData: true, attributes: true, subtree: true });
+  }
+
+  // [未保存]のままページを閉じる・遷移する前にブラウザの確認ダイアログを出す。
+  // (表示される文言はブラウザ固定で、独自のメッセージは指定できない)
+  function handleBeforeUnload(e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
   }
 
   function handleImageFile(file) {
@@ -1035,22 +1088,25 @@
     if (format === 'markdown') {
       var mdRes = containerToMarkdown(root);
       ReportEngine.downloadBlob(mdRes.markdown, base + '.md', 'text/markdown');
+      setDirty(false);
       mdRes.warnings.length ? showMessage(mdRes.warnings.join(' / '), 'error') : clearMessage();
       return;
     }
     if (format === 'html') {
       var htmlRes = containerToStandaloneHTML(root, getHeadingText(root));
       ReportEngine.downloadBlob(htmlRes.html, base + '.html', 'text/html');
+      setDirty(false);
       htmlRes.warnings.length ? showMessage(htmlRes.warnings.join(' / '), 'error') : clearMessage();
       return;
     }
     if (format === 'pdf') {
-      exportPDF(root, base + '.pdf', function (msg) { showMessage(msg, 'error'); });
+      if (exportPDF(root, base + '.pdf', function (msg) { showMessage(msg, 'error'); })) setDirty(false);
       return;
     }
     if (format === 'draft') {
       var draftHtml = buildDraftHTML();
       ReportEngine.downloadBlob(draftHtml, 'wip_' + base + '.html', 'text/html');
+      setDirty(false);
       clearMessage();
     }
   }
@@ -1069,6 +1125,8 @@
       classifyTables(root);
       syncTitleFromHeading(root); // 最初のH1の内容を<title>/document.titleに反映
       root.addEventListener('input', function () { syncTitleFromHeading(root); });
+      watchChanges(root);
+      global.addEventListener('beforeunload', handleBeforeUnload);
     } else {
       showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。id="' + CONTAINER_ID + '" の要素を用意してください。', 'error');
     }
@@ -1167,6 +1225,9 @@
     clearMessage: clearMessage,
     getBaseFilename: getBaseFilename,
     exportPDF: exportPDF,
+    setDirty: setDirty,
+    isDirty: isDirty,
+    handleBeforeUnload: handleBeforeUnload,
     els: els
   };
 

@@ -1071,6 +1071,103 @@ test('getHeadingTextはH1が無ければdocument.titleにフォールバック�
 });
 
 // ------------------------------------------------------------------
+// 保存ステータス([未保存]表示・離脱時の確認)
+// ------------------------------------------------------------------
+// MutationObserverのコールバックはマイクロタスクで呼ばれるため、変更後に一拍待つ
+const flushMutations = () => new Promise((r) => setTimeout(r, 0));
+
+function statusText(dom) {
+  return dom.window.document.querySelector('.report-engine-bar .report-engine-status').textContent;
+}
+
+test('開いた直後は保存ステータスが空(未保存ではない)', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>報告書</h1><table><tr><th>A</th></tr></table></div>');
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '');
+  assert.strictEqual(dom.window.ReportEngine._internal.isDirty(), false);
+});
+
+test('帳票の内容を変更するとメニューバーに[未保存]が表示される', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  const p = dom.window.document.querySelector('#report-content p');
+  p.firstChild.data = '本文を編集';
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '[未保存]');
+  assert.strictEqual(dom.window.ReportEngine._internal.isDirty(), true);
+});
+
+test('画像挿入などスクリプトによる要素追加でも[未保存]になる', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  const root = dom.window.document.getElementById('report-content');
+  const img = dom.window.document.createElement('img');
+  img.src = 'data:image/png;base64,AAAA';
+  root.appendChild(img);
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '[未保存]');
+});
+
+for (const format of ['html', 'markdown', 'draft']) {
+  test('[未保存]の状態で' + format + '保存すると[未保存]が消える', async () => {
+    const dom = await makeEnv('<div id="report-content"><h1>報告書</h1><table><tr><th>A</th><th>B</th></tr><tr><th>1</th><td>x</td></tr></table></div>');
+    dom.window.ReportEngine.downloadBlob = () => {};
+    dom.window.document.querySelector('#report-content h1').firstChild.data = '報告書2';
+    await flushMutations();
+    assert.strictEqual(statusText(dom), '[未保存]');
+
+    dom.window.ReportEngine.performSave(format);
+    await flushMutations(); // 保存時の表のクラス分け(class属性の変更)で再び[未保存]にならないこと
+    assert.strictEqual(statusText(dom), '');
+    assert.strictEqual(dom.window.ReportEngine._internal.isDirty(), false);
+  });
+}
+
+test('PDF出力ライブラリが無くPDF保存に失敗した場合は[未保存]のまま', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  dom.window.document.querySelector('#report-content p').firstChild.data = '変更';
+  await flushMutations();
+  dom.window.ReportEngine.performSave('pdf');
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '[未保存]');
+});
+
+test('見出しへのid自動付与(ページ内リンク用)だけでは[未保存]にならない', async () => {
+  const dom = await makeEnv('<div id="report-content"><h1>報告書</h1><h2>小見出し</h2></div>');
+  const root = dom.window.document.getElementById('report-content');
+  dom.window.ReportEngine.ensureHeadingId(root, root.querySelector('h2'));
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '');
+});
+
+test('一次保存のHTMLには保存ステータス表示が含まれない', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  dom.window.document.querySelector('#report-content p').firstChild.data = '変更';
+  await flushMutations();
+  const draftHtml = dom.window.ReportEngine.buildDraftHTML();
+  // scriptタグ内の文字列には[未保存]が含まれるので、文字列検索ではなくDOMとして確認する
+  const draftDoc = new JSDOM(draftHtml).window.document;
+  assert.strictEqual(draftDoc.querySelector('.report-engine-status'), null, '一次保存に保存ステータス表示が残っている');
+});
+
+test('[未保存]のときだけbeforeunloadで離脱確認が要求される', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  const fire = () => {
+    const ev = new dom.window.Event('beforeunload', { cancelable: true });
+    dom.window.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  };
+  assert.strictEqual(fire(), false, '未変更なのに離脱確認が要求された');
+
+  dom.window.document.querySelector('#report-content p').firstChild.data = '変更';
+  await flushMutations();
+  assert.strictEqual(fire(), true, '[未保存]なのに離脱確認が要求されていない');
+
+  dom.window.ReportEngine.downloadBlob = () => {};
+  dom.window.ReportEngine.performSave('html');
+  await flushMutations();
+  assert.strictEqual(fire(), false, '保存後も離脱確認が要求されている');
+});
+
+// ------------------------------------------------------------------
 (async () => {
   for (const { name, fn } of tests) {
     try {

@@ -185,6 +185,10 @@ body {
  *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
  *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
  *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   7a. 内容を編集すると、メニューバーに「[未保存]」と表示される(いずれかの形式で保存すると消える)。
+ *      [未保存]のままタブを閉じる・別ページへ移動・再読み込みしようとすると、ブラウザの確認ダイアログが出る。
+ *   7b. document.title(=<title>タグ・ブラウザタブ)は、常に最初のH1の内容に自動で同期する
+ *      (編集するたびに更新され、HTML保存時のtitleタグにも反映される)。
  *   8. Markdown風のショートカット/オートフォーマットに対応する:
  *      選択中のテキストに Ctrl+Shift+B(太字)/Ctrl+Shift+Y(斜体)/Ctrl+Shift+U(下線)/
  *      Ctrl+Shift+ +・Ctrl+Shift+ -(文字サイズを2pt刻みで増減)/Ctrl+Shift+K(リンク挿入、URL入力フォーム付き)。
@@ -827,10 +831,21 @@ body {
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   };
 
+  // 文書内の最初のH1のテキストを返す(無ければ現在のdocument.titleにフォールバック)
+  function getHeadingText(root) {
+    var h1 = root && root.querySelector('h1');
+    return (h1 && textOf(h1)) || document.title || 'report';
+  }
+
   function getBaseFilename() {
     var root = document.getElementById(CONTAINER_ID);
-    var h1 = root && root.querySelector('h1');
-    return sanitizeFilename((h1 && textOf(h1)) || document.title);
+    return sanitizeFilename(getHeadingText(root));
+  }
+
+  // document.title(=ブラウザタブや<title>タグ)を、最初のH1の内容に同期させる。
+  function syncTitleFromHeading(root) {
+    var text = getHeadingText(root);
+    if (text) document.title = text;
   }
 
   // ==============================================================
@@ -840,7 +855,7 @@ body {
   function exportPDF(root, filename, onError) {
     if (typeof global.html2pdf === 'undefined') {
       onError('PDF出力ライブラリ(html2pdf.js)を読み込めませんでした。インターネット接続を確認してください。');
-      return;
+      return false;
     }
     var clone = root.cloneNode(true);
     clone.removeAttribute('contenteditable');
@@ -850,6 +865,7 @@ body {
       html2canvas: { scale: 2 },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
     }).from(clone).save();
+    return true;
   }
 
   // ==============================================================
@@ -873,6 +889,7 @@ body {
       '.report-engine-bar button.insert-img{cursor:pointer;border-radius:6px;padding:6px 16px;' +
       'background:transparent;color:#fff;font-size:14px;flex-shrink:0;border:1px solid #4b5a70;}' +
       '.report-engine-bar button.insert-img:hover{background:#2c374a;}' +
+      '.report-engine-status{flex-shrink:0;font-size:13px;font-weight:600;color:#fbbf24;}' +
       '.report-engine-msg{flex:1;min-height:1.2em;font-size:13px;color:#cbd3e1;}' +
       '.report-engine-msg.error{color:#ffb4b4;}' +
       '.report-engine-msg .close-msg{margin-left:8px;cursor:pointer;background:none;border:none;' +
@@ -889,7 +906,8 @@ body {
       'background:#f9fafb;font-size:14px;cursor:pointer;text-align:left;}' +
       '.report-engine-modal .choices button:hover{background:#eef2ff;border-color:#6366f1;}' +
       '.report-engine-modal .cancel{margin-top:14px;background:none;border:none;color:#6b7280;' +
-      'cursor:pointer;font-size:13px;padding:0;}';
+      'cursor:pointer;font-size:13px;padding:0;}' +
+      '#' + CONTAINER_ID + ' [id]{scroll-margin-top:var(--report-engine-bar-h, 56px);}';
     document.head.appendChild(style);
   }
 
@@ -934,6 +952,9 @@ body {
     attachBtn.textContent = 'ファイルを添付';
     attachBtn.addEventListener('click', function () { attachInput.click(); });
 
+    var status = document.createElement('span');
+    status.className = 'report-engine-status';
+
     var msg = document.createElement('span');
     msg.className = 'report-engine-msg';
 
@@ -942,17 +963,65 @@ body {
     bar.appendChild(fileInput);
     bar.appendChild(attachBtn);
     bar.appendChild(attachInput);
+    bar.appendChild(status);
     bar.appendChild(msg);
     document.body.insertBefore(bar, document.body.firstChild);
 
     // 本文がバーの下に隠れないよう余白を確保
     document.body.style.paddingTop = bar.offsetHeight + 'px';
+    // ページ内リンクでジャンプした見出し等がバーの下に隠れないよう、CSS変数でバーの高さを共有する
+    document.documentElement.style.setProperty('--report-engine-bar-h', bar.offsetHeight + 'px');
 
     els.bar = bar;
     els.saveBtn = saveBtn;
     els.imgBtn = imgBtn;
     els.attachBtn = attachBtn;
+    els.status = status;
     els.msg = msg;
+  }
+
+  // ==============================================================
+  // 保存ステータス([未保存]表示・離脱時の確認)
+  // ==============================================================
+
+  var dirty = false;
+
+  function setDirty(value) {
+    dirty = value;
+    if (els.status) els.status.textContent = dirty ? '[未保存]' : '';
+  }
+
+  function isDirty() {
+    return dirty;
+  }
+
+  // 帳票内のDOM変更を監視して[未保存]にする。
+  // キー入力だけでなく、画像・添付・リンク挿入や表の行追加などスクリプトによる変更も拾うため、
+  // inputイベントではなくMutationObserverを使う。
+  // ただし保存時の表のクラス分け(class)やページ内リンク用のid付与は内容の変更ではないので無視する。
+  var IGNORED_ATTRIBUTES = ['class', 'id', 'contenteditable'];
+
+  function watchChanges(root) {
+    if (typeof global.MutationObserver === 'undefined') {
+      root.addEventListener('input', function () { setDirty(true); });
+      return;
+    }
+    var observer = new global.MutationObserver(function (mutations) {
+      var changed = mutations.some(function (m) {
+        return m.type !== 'attributes' || IGNORED_ATTRIBUTES.indexOf(m.attributeName) === -1;
+      });
+      if (changed) setDirty(true);
+    });
+    observer.observe(root, { childList: true, characterData: true, attributes: true, subtree: true });
+  }
+
+  // [未保存]のままページを閉じる・遷移する前にブラウザの確認ダイアログを出す。
+  // (表示される文言はブラウザ固定で、独自のメッセージは指定できない)
+  function handleBeforeUnload(e) {
+    if (!dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
   }
 
   function handleImageFile(file) {
@@ -1005,6 +1074,22 @@ body {
 
   // Ctrl+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
   // モーダルを開くとcontentEditable内の選択が失われるため、開く前にRangeを複製して保持しておく。
+  var HEADING_ID_PREFIX = 'h-';
+
+  // rootの中で使われていない連番のidを見出しに割り当てる(まだ無ければ)。
+  function ensureHeadingId(root, h) {
+    if (h.id) return h.id;
+    var n = 1;
+    while (root.querySelector('#' + HEADING_ID_PREFIX + n)) n++;
+    h.id = HEADING_ID_PREFIX + n;
+    return h.id;
+  }
+
+  // Ctrl+Shift+K: 選択中のテキストがあればリンク化、無ければURL+表示テキストを入力してリンクを挿入する。
+  // 見出しが1つ以上あれば「見出しへのリンク」選択欄も出し、選んだ見出しに自動でidを割り当てて
+  // URL欄に "#id" を入力する(手作業でページ内リンクの飛び先を用意しなくてよいようにするため)。
+  // "#"で始まるURL(ページ内アンカー)には target="_blank" を付けない(別タブで開くと編集中の
+  // 内容が引き継がれず、ジャンプしないように見えてしまうため)。
   function openLinkDialog(root) {
     var sel = global.getSelection();
     var savedRange = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0).cloneRange() : null;
@@ -1019,10 +1104,33 @@ body {
     heading.textContent = 'リンクを挿入';
     modal.appendChild(heading);
 
+    var headings = Array.from(root.querySelectorAll('h1,h2,h3,h4,h5,h6'));
     var urlInput = document.createElement('input');
     urlInput.type = 'text';
     urlInput.className = 'report-engine-input';
-    urlInput.placeholder = 'https://example.com';
+    urlInput.placeholder = 'https://example.com または #見出しへのリンク';
+
+    if (headings.length) {
+      var headingSelect = document.createElement('select');
+      headingSelect.className = 'report-engine-input';
+      var placeholderOpt = document.createElement('option');
+      placeholderOpt.value = '';
+      placeholderOpt.textContent = '(任意)見出しへのリンクを選択...';
+      headingSelect.appendChild(placeholderOpt);
+      headings.forEach(function (h, idx) {
+        var opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = h.tagName + ': ' + (h.textContent || '').trim().slice(0, 40);
+        headingSelect.appendChild(opt);
+      });
+      headingSelect.addEventListener('change', function () {
+        if (headingSelect.value === '') return;
+        var h = headings[Number(headingSelect.value)];
+        urlInput.value = '#' + ensureHeadingId(root, h);
+      });
+      modal.appendChild(headingSelect);
+    }
+
     modal.appendChild(urlInput);
 
     var textInput = null;
@@ -1042,15 +1150,30 @@ body {
     okBtn.addEventListener('click', function () {
       var url = urlInput.value.trim();
       if (!url) { urlInput.focus(); return; }
+      var isAnchor = url.charAt(0) === '#';
+
       if (sel) {
         sel.removeAllRanges();
         if (savedRange) sel.addRange(savedRange);
       }
+
       if (hasSelection) {
-        document.execCommand('createLink', false, url);
+        var range = sel.getRangeAt(0);
+        var contents = range.extractContents();
+        var a = document.createElement('a');
+        a.href = url;
+        if (!isAnchor) { a.target = '_blank'; a.rel = 'noopener'; }
+        a.appendChild(contents);
+        range.insertNode(a);
+        var after = document.createRange();
+        after.setStartAfter(a);
+        after.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(after);
       } else {
         var label = escapeHtml(textInput.value.trim() || url);
-        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + label + '</a>&nbsp;');
+        var attrs = isAnchor ? '' : ' target="_blank" rel="noopener"';
+        insertHtmlAtCursor(root, '<a href="' + escapeHtml(url) + '"' + attrs + '>' + label + '</a>&nbsp;');
       }
       document.body.removeChild(overlay);
     });
@@ -1124,27 +1247,31 @@ body {
       return;
     }
     classifyTables(root);
+    syncTitleFromHeading(root);
     var base = getBaseFilename();
 
     if (format === 'markdown') {
       var mdRes = containerToMarkdown(root);
       ReportEngine.downloadBlob(mdRes.markdown, base + '.md', 'text/markdown');
+      setDirty(false);
       mdRes.warnings.length ? showMessage(mdRes.warnings.join(' / '), 'error') : clearMessage();
       return;
     }
     if (format === 'html') {
-      var htmlRes = containerToStandaloneHTML(root, base);
+      var htmlRes = containerToStandaloneHTML(root, getHeadingText(root));
       ReportEngine.downloadBlob(htmlRes.html, base + '.html', 'text/html');
+      setDirty(false);
       htmlRes.warnings.length ? showMessage(htmlRes.warnings.join(' / '), 'error') : clearMessage();
       return;
     }
     if (format === 'pdf') {
-      exportPDF(root, base + '.pdf', function (msg) { showMessage(msg, 'error'); });
+      if (exportPDF(root, base + '.pdf', function (msg) { showMessage(msg, 'error'); })) setDirty(false);
       return;
     }
     if (format === 'draft') {
       var draftHtml = buildDraftHTML();
       ReportEngine.downloadBlob(draftHtml, 'wip_' + base + '.html', 'text/html');
+      setDirty(false);
       clearMessage();
     }
   }
@@ -1161,6 +1288,10 @@ body {
     if (root) {
       root.setAttribute('contenteditable', 'true');
       classifyTables(root);
+      syncTitleFromHeading(root); // 最初のH1の内容を<title>/document.titleに反映
+      root.addEventListener('input', function () { syncTitleFromHeading(root); });
+      watchChanges(root);
+      global.addEventListener('beforeunload', handleBeforeUnload);
     } else {
       showMessage('編集対象(#' + CONTAINER_ID + ')が見つかりません。id="' + CONTAINER_ID + '" の要素を用意してください。', 'error');
     }
@@ -1237,6 +1368,8 @@ body {
   ReportEngine.containerToStandaloneHTML = containerToStandaloneHTML;
   ReportEngine.buildDraftHTML = buildDraftHTML;
   ReportEngine.classifyTables = classifyTables;
+  ReportEngine.getHeadingText = getHeadingText;
+  ReportEngine.syncTitleFromHeading = syncTitleFromHeading;
   ReportEngine.handleTabInTable = handleTabInTable;
   ReportEngine.performSave = performSave;
   ReportEngine.openFormatChooser = openFormatChooser;
@@ -1247,6 +1380,7 @@ body {
   ReportEngine.humanFileSize = humanFileSize;
   ReportEngine.adjustFontSize = adjustFontSize;
   ReportEngine.openLinkDialog = openLinkDialog;
+  ReportEngine.ensureHeadingId = ensureHeadingId;
   ReportEngine.tryMarkdownSpaceTrigger = tryMarkdownSpaceTrigger;
   ReportEngine.tryMarkdownEnterTrigger = tryMarkdownEnterTrigger;
   ReportEngine.getCurrentListItem = getCurrentListItem;
@@ -1256,6 +1390,9 @@ body {
     clearMessage: clearMessage,
     getBaseFilename: getBaseFilename,
     exportPDF: exportPDF,
+    setDirty: setDirty,
+    isDirty: isDirty,
+    handleBeforeUnload: handleBeforeUnload,
     els: els
   };
 
