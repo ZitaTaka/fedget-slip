@@ -185,6 +185,11 @@ body {
  *      新しい行が追加される(一覧表形式・単票形式どちらも同様)。
  *      一覧表形式(class="report-table-list")のセルは vertical-align:top で
  *      THの背景色を薄いグレイにするCSSが style.css に含まれる。
+ *   6b. メニューバーの「一覧表」「単票」プルダウンで、表の追加と、カーソル位置の表の
+ *      列追加(右に)・列削除・行追加(下に)・行削除ができる。一覧表はセルの結合
+ *      (ドラッグで選択した範囲)、単票はタイトルセル(TH)/データセル(TD)の切り替えもできる。
+ *      一覧表の追加: 1行目がタイトル行の5列×(タイトル行+データ3行)。
+ *      単票の追加: 6列×3行で、奇数列がタイトルセル・偶数列がデータセル。
  *   7a. 内容を編集すると、メニューバーに「[未保存]」と表示される(いずれかの形式で保存すると消える)。
  *      [未保存]のままタブを閉じる・別ページへ移動・再読み込みしようとすると、ブラウザの確認ダイアログが出る。
  *   7b. document.title(=<title>タグ・ブラウザタブ)は、常に最初のH1の内容に自動で同期する
@@ -386,12 +391,8 @@ body {
   // Markdown変換のisListFormat判定とは独立した処理(見た目専用)。
   function classifyTables(root) {
     Array.from(root.querySelectorAll('table')).forEach(function (table) {
-      var rows = getDirectRows(table);
-      if (rows.length === 0) return;
-      var headerCells = Array.from(rows[0].cells);
-      var isList = headerCells.length > 0 && headerCells.every(function (c) {
-        return c.tagName.toLowerCase() === 'th';
-      });
+      if (getDirectRows(table).length === 0) return;
+      var isList = isListTable(table);
       table.classList.remove('report-table-list', 'report-table-form');
       table.classList.add(isList ? 'report-table-list' : 'report-table-form');
     });
@@ -471,6 +472,384 @@ body {
     var newRow = buildNewRow(table, rows, row);
     row.parentNode.appendChild(newRow);
     if (newRow.cells.length) placeCaretAtStart(newRow.cells[0]);
+    return true;
+  }
+
+  // ==============================================================
+  // 表の追加・編集(メニューバーの「一覧表」「単票」プルダウン)
+  // 結合セル(colspan/rowspan)があっても列・行の位置がずれないよう、
+  // 表をいったん「行×列」の格子に展開してから操作する。
+  // ==============================================================
+
+  var LIST_TABLE_COLS = 5;       // 一覧表の追加: 列数
+  var LIST_TABLE_DATA_ROWS = 3;  // 一覧表の追加: タイトル行の下のデータ行数
+  var FORM_TABLE_COLS = 6;       // 単票の追加: 列数(奇数列=タイトルセル、偶数列=データセル)
+  var FORM_TABLE_ROWS = 3;       // 単票の追加: 行数
+  var TABLE_KIND_LABELS = { list: '一覧表', form: '単票' };
+
+  function isListTable(table) {
+    var rows = getDirectRows(table);
+    if (rows.length === 0) return false;
+    var headerCells = Array.from(rows[0].cells);
+    return headerCells.length > 0 && headerCells.every(function (c) {
+      return c.tagName.toLowerCase() === 'th';
+    });
+  }
+
+  // 空のセルでもクリック・入力しやすい高さになるよう<br>を入れておく
+  function createCell(tag) {
+    var cell = document.createElement(tag);
+    cell.appendChild(document.createElement('br'));
+    return cell;
+  }
+
+  function spanOf(cell, attr) {
+    var n = parseInt(cell.getAttribute(attr), 10);
+    return n > 1 ? n : 1;
+  }
+
+  function setSpan(cell, attr, n) {
+    if (n > 1) cell.setAttribute(attr, String(n));
+    else cell.removeAttribute(attr);
+  }
+
+  // grid[r][c] には、その位置を占めるセルが入る(結合セルは複数の位置に同じセルが入る)。
+  function buildTableGrid(table) {
+    var rows = getDirectRows(table);
+    var grid = rows.map(function () { return []; });
+    rows.forEach(function (row, r) {
+      var c = 0;
+      Array.from(row.cells).forEach(function (cell) {
+        while (grid[r][c]) c++;
+        var rs = spanOf(cell, 'rowspan');
+        var cs = spanOf(cell, 'colspan');
+        for (var dr = 0; dr < rs && r + dr < rows.length; dr++) {
+          for (var dc = 0; dc < cs; dc++) grid[r + dr][c + dc] = cell;
+        }
+        c += cs;
+      });
+    });
+    var cols = grid.reduce(function (max, g) { return Math.max(max, g.length); }, 0);
+    return { rows: rows, grid: grid, cols: cols };
+  }
+
+  function cellPosition(g, cell) {
+    var r = g.rows.indexOf(cell.parentNode);
+    return { r: r, c: g.grid[r].indexOf(cell) };
+  }
+
+  // 行rの中で、格子上の列k以降から始まる最初のセルの前(無ければ行末)にセルを差し込む
+  function insertCellAtColumn(g, r, k, newCell) {
+    var row = g.rows[r];
+    var before = null;
+    Array.from(row.cells).some(function (cell) {
+      if (g.grid[r].indexOf(cell) >= k) { before = cell; return true; }
+      return false;
+    });
+    row.insertBefore(newCell, before);
+  }
+
+  // ドラッグで選択したセル範囲を返す。選択していなければカーソルのあるセル1つだけを返す。
+  // DOMの選択範囲は文書順(行ごと)に伸びるため、途中の行の左端のセルなども含んでしまう。
+  // そこで選択の最初と最後のセルを対角とする長方形(表計算ソフトと同じ感覚)の中のセルを返す。
+  function getSelectedCells(root) {
+    var cur = getCurrentCell(root);
+    var sel = global.getSelection();
+    if (!sel || !sel.rangeCount || sel.isCollapsed) return cur ? [cur] : [];
+    var node = sel.anchorNode;
+    while (node && node !== root && !(node.nodeType === 1 && node.tagName === 'TABLE')) node = node.parentNode;
+    if (!node || node === root) return cur ? [cur] : [];
+    var table = node;
+    var ranges = [];
+    for (var i = 0; i < sel.rangeCount; i++) ranges.push(sel.getRangeAt(i));
+    var cells = Array.from(table.querySelectorAll('th,td')).filter(function (cell) {
+      if (cell.closest('table') !== table) return false; // 入れ子の表のセルは対象外
+      var cellRange = document.createRange();
+      cellRange.selectNodeContents(cell);
+      return ranges.some(function (range) {
+        // 選択の終わりが次のセルの先頭にかかっているだけ、のような接し方は重なりとみなさない
+        return cellRange.compareBoundaryPoints(global.Range.START_TO_END, range) > 0 &&
+          cellRange.compareBoundaryPoints(global.Range.END_TO_START, range) < 0;
+      });
+    });
+    if (cells.length <= 1) return cells.length ? cells : (cur ? [cur] : []);
+    var g = buildTableGrid(table);
+    var a = cellPosition(g, cells[0]);
+    var b = cellPosition(g, cells[cells.length - 1]);
+    var r0 = Math.min(a.r, b.r), r1 = Math.max(a.r, b.r);
+    var c0 = Math.min(a.c, b.c), c1 = Math.max(a.c, b.c);
+    var rect = [];
+    for (var r = r0; r <= r1; r++) {
+      for (var c = c0; c <= c1; c++) {
+        var x = g.grid[r][c];
+        if (x && rect.indexOf(x) === -1) rect.push(x);
+      }
+    }
+    return rect;
+  }
+
+  function buildNewTable(kind) {
+    var table = document.createElement('table');
+    var tbody = document.createElement('tbody');
+    table.appendChild(tbody);
+    var rowCount = kind === 'list' ? LIST_TABLE_DATA_ROWS + 1 : FORM_TABLE_ROWS;
+    var colCount = kind === 'list' ? LIST_TABLE_COLS : FORM_TABLE_COLS;
+    for (var r = 0; r < rowCount; r++) {
+      var tr = document.createElement('tr');
+      for (var c = 0; c < colCount; c++) {
+        var isTitle = kind === 'list'
+          ? (r === 0 || c === 0)  // 一覧表: 1行目がタイトル行。データ行も既存の規約どおり先頭はTH
+          : (c % 2 === 0);        // 単票: 1・3・5列目(奇数列)がタイトルセル
+        tr.appendChild(createCell(isTitle ? 'th' : 'td'));
+      }
+      tbody.appendChild(tr);
+    }
+    return table;
+  }
+
+  // カーソルのある段落(表の中ならその表)の直後に新しい表を挿入する。
+  // 表の後ろに続きを書けるよう、後ろに要素が無ければ空の段落も追加する。
+  function insertNewTable(root, kind) {
+    var table = buildNewTable(kind);
+    var sel = global.getSelection();
+    var node = sel && sel.anchorNode;
+    if (node && node === root) {
+      root.insertBefore(table, root.childNodes[sel.anchorOffset] || null);
+    } else if (node && root.contains(node)) {
+      while (node.parentNode !== root) node = node.parentNode;
+      root.insertBefore(table, node.nextSibling);
+    } else {
+      root.appendChild(table);
+    }
+    if (!table.nextElementSibling) {
+      var p = document.createElement('p');
+      p.appendChild(document.createElement('br'));
+      root.insertBefore(p, table.nextSibling);
+    }
+    placeCaretAtStart(table.querySelector('th,td'));
+    return table;
+  }
+
+  // 列追加: カーソルのあるセルの右に1列追加する
+  function addTableColumn(table, cell, kind) {
+    var g = buildTableGrid(table);
+    var pos = cellPosition(g, cell);
+    var k = pos.c + spanOf(cell, 'colspan');
+    var widened = [];
+    var newCellInRow = null;
+    g.rows.forEach(function (row, r) {
+      var left = g.grid[r][k - 1];
+      if (left && left === g.grid[r][k]) {
+        // 結合セルが追加位置をまたいでいる場合は、新しいセルを作らず結合を1列広げる
+        if (widened.indexOf(left) === -1) {
+          setSpan(left, 'colspan', spanOf(left, 'colspan') + 1);
+          widened.push(left);
+        }
+        return;
+      }
+      var newCell = createCell(kind === 'list' && r === 0 ? 'th' : 'td');
+      insertCellAtColumn(g, r, k, newCell);
+      if (r === pos.r) newCellInRow = newCell;
+    });
+    if (newCellInRow) placeCaretAtStart(newCellInRow);
+  }
+
+  // 列削除: カーソルのあるセルの列を削除する(結合セルは1列分縮める)
+  function deleteTableColumn(table, cell) {
+    var g = buildTableGrid(table);
+    if (g.cols <= 1) return '最後の1列は削除できません。';
+    var pos = cellPosition(g, cell);
+    var handled = [];
+    g.rows.forEach(function (row, r) {
+      var target = g.grid[r][pos.c];
+      if (!target || handled.indexOf(target) !== -1) return;
+      handled.push(target);
+      var cs = spanOf(target, 'colspan');
+      if (cs > 1) setSpan(target, 'colspan', cs - 1);
+      else target.parentNode.removeChild(target);
+    });
+    var g2 = buildTableGrid(table);
+    var row = g2.grid[pos.r] || [];
+    var next = row[Math.min(pos.c, row.length - 1)];
+    if (next) placeCaretAtStart(next);
+  }
+
+  // 行追加: カーソルのあるセルの下に1行追加する。
+  // 一覧表は「先頭TH+残りTD」、単票は上の行のTH/TDの並び(結合の幅も含む)を引き継ぐ。
+  function addTableRow(table, cell, kind) {
+    var g = buildTableGrid(table);
+    var pos = cellPosition(g, cell);
+    var k = pos.r + spanOf(cell, 'rowspan');
+    var prev = g.grid[k - 1];
+    var next = g.grid[k];
+    var newRow = document.createElement('tr');
+    var handled = [];
+    for (var c = 0; c < g.cols; c++) {
+      var above = prev[c];
+      if (above && next && next[c] === above) {
+        // 結合セルが追加位置をまたいでいる場合は、新しいセルを作らず結合を1行伸ばす
+        if (handled.indexOf(above) === -1) {
+          setSpan(above, 'rowspan', spanOf(above, 'rowspan') + 1);
+          handled.push(above);
+        }
+        continue;
+      }
+      if (kind === 'form' && above) {
+        if (handled.indexOf(above) !== -1) continue;
+        handled.push(above);
+        var copied = createCell(above.tagName.toLowerCase());
+        setSpan(copied, 'colspan', spanOf(above, 'colspan'));
+        newRow.appendChild(copied);
+        continue;
+      }
+      newRow.appendChild(createCell(kind === 'list' && c === 0 ? 'th' : 'td'));
+    }
+    if (g.rows[k]) g.rows[k].parentNode.insertBefore(newRow, g.rows[k]);
+    else g.rows[k - 1].parentNode.appendChild(newRow);
+    if (newRow.cells.length) placeCaretAtStart(newRow.cells[0]);
+  }
+
+  // 行削除: カーソルのあるセルの行を削除する。
+  // 上の行から伸びている結合セルは1行縮め、この行から下に伸びている結合セルは次の行へ移す。
+  function deleteTableRow(table, cell, kind) {
+    var g = buildTableGrid(table);
+    var pos = cellPosition(g, cell);
+    if (g.rows.length <= 1) return '最後の1行は削除できません。';
+    if (kind === 'list' && pos.r === 0) return '一覧表のタイトル行は削除できません。';
+    var row = g.rows[pos.r];
+    var handled = [];
+    var moves = [];
+    for (var c = 0; c < g.cols; c++) {
+      var x = g.grid[pos.r][c];
+      if (!x || handled.indexOf(x) !== -1) continue;
+      handled.push(x);
+      var rs = spanOf(x, 'rowspan');
+      if (x.parentNode !== row) {
+        setSpan(x, 'rowspan', rs - 1);
+      } else if (rs > 1) {
+        setSpan(x, 'rowspan', rs - 1);
+        moves.push({ cell: x, c: c });
+      }
+    }
+    moves.forEach(function (m) { insertCellAtColumn(g, pos.r + 1, m.c, m.cell); });
+    row.parentNode.removeChild(row);
+    var g2 = buildTableGrid(table);
+    var targetRow = g2.grid[Math.min(pos.r, g2.rows.length - 1)] || [];
+    var next = targetRow[Math.min(pos.c, targetRow.length - 1)];
+    if (next) placeCaretAtStart(next);
+  }
+
+  // セルの結合: 選択範囲にかかるセルを囲む長方形を1つのセルに結合する。
+  // 中身は左上のセルに改行区切りでまとめる。
+  function mergeTableCells(table, cells) {
+    var g = buildTableGrid(table);
+    var r0 = Infinity, r1 = -1, c0 = Infinity, c1 = -1;
+    function include(cell) {
+      var p = cellPosition(g, cell);
+      r0 = Math.min(r0, p.r);
+      c0 = Math.min(c0, p.c);
+      r1 = Math.max(r1, p.r + spanOf(cell, 'rowspan') - 1);
+      c1 = Math.max(c1, p.c + spanOf(cell, 'colspan') - 1);
+    }
+    cells.forEach(include);
+    // 長方形の一部にかかっている結合セルがあれば、それが収まるまで範囲を広げる
+    var changed = true;
+    while (changed) {
+      var before = [r0, r1, c0, c1].join();
+      for (var r = r0; r <= r1; r++) {
+        for (var c = c0; c <= c1; c++) {
+          if (!g.grid[r] || !g.grid[r][c]) return '結合できない範囲です(セルの無い位置が含まれています)。';
+          include(g.grid[r][c]);
+        }
+      }
+      changed = before !== [r0, r1, c0, c1].join();
+    }
+    var target = g.grid[r0][c0];
+    var others = [];
+    for (var rr = r0; rr <= r1; rr++) {
+      for (var cc = c0; cc <= c1; cc++) {
+        var x = g.grid[rr][cc];
+        if (x !== target && others.indexOf(x) === -1) others.push(x);
+      }
+    }
+    if (!others.length) return '結合するセルを2つ以上選択してください(ドラッグで複数のセルを選択)。';
+    var hasContent = function (el) { return textOf(el) !== '' || !!el.querySelector('img,a'); };
+    others.forEach(function (x) {
+      if (hasContent(x)) {
+        if (hasContent(target)) target.appendChild(document.createElement('br'));
+        else target.innerHTML = '';
+        while (x.firstChild) target.appendChild(x.firstChild);
+      }
+      x.parentNode.removeChild(x);
+    });
+    setSpan(target, 'colspan', c1 - c0 + 1);
+    setSpan(target, 'rowspan', r1 - r0 + 1);
+    placeCaretAtStart(target);
+  }
+
+  // タイトルセル(TH)/データセル(TD)の切り替え。属性と中身はそのまま引き継ぐ。
+  function changeCellType(cells, tag) {
+    var sel = global.getSelection();
+    var saved = sel && sel.rangeCount ? { node: sel.anchorNode, offset: sel.anchorOffset } : null;
+    var replaced = [];
+    cells.forEach(function (cell) {
+      if (cell.tagName.toLowerCase() === tag) return;
+      var el = document.createElement(tag);
+      Array.from(cell.attributes).forEach(function (a) { el.setAttribute(a.name, a.value); });
+      while (cell.firstChild) el.appendChild(cell.firstChild);
+      cell.parentNode.replaceChild(el, cell);
+      if (saved && saved.node === cell) saved.node = el;
+      replaced.push(el);
+    });
+    // 中身を移し替えると選択が外れるので、カーソル位置を元に戻す
+    if (saved && saved.node && document.contains(saved.node)) {
+      var range = document.createRange();
+      range.setStart(saved.node, saved.offset);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } else if (replaced.length) {
+      placeCaretAtStart(replaced[0]);
+    }
+  }
+
+  // メニューの各項目から呼ばれる。kind: 'list'(一覧表)/'form'(単票)
+  function runTableCommand(kind, command) {
+    var root = document.getElementById(CONTAINER_ID);
+    if (!root) return false;
+    if (command === 'insert') {
+      insertNewTable(root, kind);
+      classifyTables(root);
+      clearMessage();
+      return true;
+    }
+    var cells = getSelectedCells(root);
+    var cell = getCurrentCell(root) || cells[0];
+    if (!cell) {
+      showMessage('表のセル内にカーソルを置いてから操作してください。', 'error');
+      return false;
+    }
+    var table = cell.closest('table');
+    var actual = isListTable(table) ? 'list' : 'form';
+    if (actual !== kind) {
+      var label = TABLE_KIND_LABELS[actual];
+      showMessage('カーソル位置の表は' + label + 'です。「' + label + '」メニューから操作してください。', 'error');
+      return false;
+    }
+    var error;
+    if (command === 'addColumn') error = addTableColumn(table, cell, kind);
+    else if (command === 'deleteColumn') error = deleteTableColumn(table, cell);
+    else if (command === 'addRow') error = addTableRow(table, cell, kind);
+    else if (command === 'deleteRow') error = deleteTableRow(table, cell, kind);
+    else if (command === 'merge') error = mergeTableCells(table, cells);
+    else if (command === 'toTitle') error = changeCellType(cells, 'th');
+    else if (command === 'toData') error = changeCellType(cells, 'td');
+    if (error) {
+      showMessage(error, 'error');
+      return false;
+    }
+    classifyTables(root);
+    clearMessage();
     return true;
   }
 
@@ -880,7 +1259,7 @@ body {
     style.id = STYLE_ID;
     style.textContent =
       '.report-engine-bar{position:fixed;top:0;left:0;right:0;z-index:9999;' +
-      'display:flex;align-items:center;gap:12px;padding:10px 16px;' +
+      'display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:10px 16px;' +
       'background:#20293a;color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;' +
       'font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,.2);}' +
       '.report-engine-bar button.save{cursor:pointer;border:none;border-radius:6px;padding:6px 16px;' +
@@ -889,6 +1268,16 @@ body {
       '.report-engine-bar button.insert-img{cursor:pointer;border-radius:6px;padding:6px 16px;' +
       'background:transparent;color:#fff;font-size:14px;flex-shrink:0;border:1px solid #4b5a70;}' +
       '.report-engine-bar button.insert-img:hover{background:#2c374a;}' +
+      '.report-engine-dropdown{position:relative;flex-shrink:0;}' +
+      '.report-engine-dropdown-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:10001;' +
+      'display:flex;flex-direction:column;min-width:180px;padding:4px;background:#fff;' +
+      'border:1px solid #d1d5db;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.2);}' +
+      '.report-engine-dropdown-menu[hidden]{display:none;}' +
+      '.report-engine-dropdown-menu button{cursor:pointer;border:none;border-radius:4px;padding:7px 12px;' +
+      'background:none;color:#111827;font-size:14px;text-align:left;white-space:nowrap;}' +
+      '.report-engine-dropdown-menu button:hover{background:#eef2ff;}' +
+      '.report-engine-dropdown-menu button.first{border-bottom:1px solid #e5e7eb;border-radius:4px 4px 0 0;' +
+      'margin-bottom:4px;}' +
       '.report-engine-status{flex-shrink:0;font-size:13px;font-weight:600;color:#fbbf24;}' +
       '.report-engine-msg{flex:1;min-height:1.2em;font-size:13px;color:#cbd3e1;}' +
       '.report-engine-msg.error{color:#ffb4b4;}' +
@@ -909,6 +1298,82 @@ body {
       'cursor:pointer;font-size:13px;padding:0;}' +
       '#' + CONTAINER_ID + ' [id]{scroll-margin-top:var(--report-engine-bar-h, 56px);}';
     document.head.appendChild(style);
+  }
+
+  var TABLE_MENUS = [
+    {
+      kind: 'list',
+      label: '一覧表',
+      items: [
+        ['insert', '一覧表の追加'],
+        ['addColumn', '列追加'],
+        ['deleteColumn', '列削除'],
+        ['addRow', '行追加'],
+        ['deleteRow', '行削除'],
+        ['merge', 'セルの結合']
+      ]
+    },
+    {
+      kind: 'form',
+      label: '単票',
+      items: [
+        ['insert', '単票の追加'],
+        ['addColumn', '列追加'],
+        ['deleteColumn', '列削除'],
+        ['addRow', '行追加'],
+        ['deleteRow', '行削除'],
+        ['toTitle', 'タイトルセルに変更'],
+        ['toData', 'データセルに変更']
+      ]
+    }
+  ];
+
+  function closeTableMenus() {
+    Array.from(document.querySelectorAll('.report-engine-dropdown-menu')).forEach(function (m) {
+      m.hidden = true;
+    });
+  }
+
+  // 「一覧表」「単票」のプルダウン。
+  // ボタンを押しても帳票内のカーソル位置・選択範囲が失われないよう、mousedownの既定動作を止める。
+  function buildTableMenu(def) {
+    var wrap = document.createElement('div');
+    wrap.className = 'report-engine-dropdown';
+    wrap.dataset.kind = def.kind;
+
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'insert-img';
+    toggle.textContent = def.label + ' ▾';
+
+    var menu = document.createElement('div');
+    menu.className = 'report-engine-dropdown-menu';
+    menu.hidden = true;
+
+    def.items.forEach(function (item, i) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.command = item[0];
+      b.textContent = item[1];
+      if (i === 0) b.className = 'first';
+      b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      b.addEventListener('click', function () {
+        closeTableMenus();
+        runTableCommand(def.kind, item[0]);
+      });
+      menu.appendChild(b);
+    });
+
+    toggle.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    toggle.addEventListener('click', function () {
+      var willOpen = menu.hidden;
+      closeTableMenus();
+      menu.hidden = !willOpen;
+    });
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(menu);
+    return wrap;
   }
 
   function buildMenuBar() {
@@ -952,6 +1417,8 @@ body {
     attachBtn.textContent = 'ファイルを添付';
     attachBtn.addEventListener('click', function () { attachInput.click(); });
 
+    var tableMenus = TABLE_MENUS.map(buildTableMenu);
+
     var status = document.createElement('span');
     status.className = 'report-engine-status';
 
@@ -963,19 +1430,31 @@ body {
     bar.appendChild(fileInput);
     bar.appendChild(attachBtn);
     bar.appendChild(attachInput);
+    tableMenus.forEach(function (menu) { bar.appendChild(menu); });
     bar.appendChild(status);
     bar.appendChild(msg);
     document.body.insertBefore(bar, document.body.firstChild);
 
     // 本文がバーの下に隠れないよう余白を確保
-    document.body.style.paddingTop = bar.offsetHeight + 'px';
-    // ページ内リンクでジャンプした見出し等がバーの下に隠れないよう、CSS変数でバーの高さを共有する
-    document.documentElement.style.setProperty('--report-engine-bar-h', bar.offsetHeight + 'px');
+    // (狭い画面ではボタンが折り返してバーが高くなるので、画面サイズが変わるたびに測り直す)
+    function syncBarHeight() {
+      document.body.style.paddingTop = bar.offsetHeight + 'px';
+      // ページ内リンクでジャンプした見出し等がバーの下に隠れないよう、CSS変数でバーの高さを共有する
+      document.documentElement.style.setProperty('--report-engine-bar-h', bar.offsetHeight + 'px');
+    }
+    syncBarHeight();
+    global.addEventListener('resize', syncBarHeight);
+
+    // プルダウンの外側をクリックしたら閉じる
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest || !e.target.closest('.report-engine-dropdown')) closeTableMenus();
+    });
 
     els.bar = bar;
     els.saveBtn = saveBtn;
     els.imgBtn = imgBtn;
     els.attachBtn = attachBtn;
+    els.tableMenus = tableMenus;
     els.status = status;
     els.msg = msg;
   }
@@ -1298,6 +1777,7 @@ body {
 
     document.addEventListener('keydown', function (e) {
       var key = (e.key || '').toLowerCase();
+      if (e.key === 'Escape') closeTableMenus();
       if ((e.ctrlKey || e.metaKey) && key === 's') {
         e.preventDefault();
         openFormatChooser();
@@ -1385,6 +1865,9 @@ body {
   ReportEngine.tryMarkdownEnterTrigger = tryMarkdownEnterTrigger;
   ReportEngine.getCurrentListItem = getCurrentListItem;
   ReportEngine.inlineToMarkdown = inlineToMarkdown;
+  ReportEngine.runTableCommand = runTableCommand;
+  ReportEngine.buildTableGrid = buildTableGrid;
+  ReportEngine.getSelectedCells = getSelectedCells;
   ReportEngine._internal = {
     showMessage: showMessage,
     clearMessage: clearMessage,

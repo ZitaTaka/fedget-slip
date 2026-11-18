@@ -1168,6 +1168,303 @@ test('[未保存]のときだけbeforeunloadで離脱確認が要求される', 
 });
 
 // ------------------------------------------------------------------
+// 表の追加・編集(メニューの「一覧表」「単票」プルダウン)
+// ------------------------------------------------------------------
+function setCaret(dom, node, offset = 0) {
+  const range = dom.window.document.createRange();
+  range.setStart(node, offset);
+  range.collapse(true);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// セルaの先頭からセルbの末尾までをドラッグ選択した状態にする
+function selectCells(dom, a, b) {
+  const range = dom.window.document.createRange();
+  range.setStart(a, 0);
+  range.setEnd(b, b.childNodes.length);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// 表の構造を「th td* ...」のような文字列の配列にする(*n=colspan, ^n=rowspan, :文字=中身)
+function layout(table) {
+  return Array.from(table.querySelectorAll('tr')).map((tr) => Array.from(tr.cells).map((c) => {
+    const cs = parseInt(c.getAttribute('colspan') || '1', 10);
+    const rs = parseInt(c.getAttribute('rowspan') || '1', 10);
+    const text = c.textContent.trim();
+    return c.tagName.toLowerCase() + (cs > 1 ? '*' + cs : '') + (rs > 1 ? '^' + rs : '') + (text ? ':' + text : '');
+  }).join(' '));
+}
+
+const LIST3 = '<div id="report-content"><p>前</p><table>' +
+  '<tr><th>H1</th><th>H2</th><th>H3</th></tr>' +
+  '<tr><th>a</th><td>b</td><td>c</td></tr>' +
+  '<tr><th>d</th><td>e</td><td>f</td></tr>' +
+  '</table><p>後</p></div>';
+const FORM2 = '<div id="report-content"><table>' +
+  '<tr><th>氏名</th><td>山田</td><th>所属</th><td>営業</td></tr>' +
+  '<tr><th>日付</th><td>1/1</td><th>承認</th><td>佐藤</td></tr>' +
+  '</table></div>';
+
+function cellByText(dom, text) {
+  return Array.from(dom.window.document.querySelectorAll('#report-content th, #report-content td'))
+    .find((c) => c.textContent.trim() === text);
+}
+
+function errorText(dom) {
+  return dom.window.document.querySelector('.report-engine-msg').textContent;
+}
+
+test('メニューバーに「一覧表」「単票」プルダウンがあり、指定どおりの項目が並ぶ', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  const menus = Array.from(dom.window.document.querySelectorAll('.report-engine-bar .report-engine-dropdown'));
+  assert.deepStrictEqual(menus.map((m) => m.querySelector('button').textContent), ['一覧表 ▾', '単票 ▾']);
+  const items = (m) => Array.from(m.querySelectorAll('.report-engine-dropdown-menu button')).map((b) => b.textContent);
+  assert.deepStrictEqual(items(menus[0]), ['一覧表の追加', '列追加', '列削除', '行追加', '行削除', 'セルの結合']);
+  assert.deepStrictEqual(items(menus[1]), ['単票の追加', '列追加', '列削除', '行追加', '行削除', 'タイトルセルに変更', 'データセルに変更']);
+  assert.ok(menus.every((m) => m.querySelector('.report-engine-dropdown-menu').hidden), '最初は閉じているべき');
+});
+
+test('プルダウンはクリックで開閉し、項目を選ぶと閉じて操作が実行される', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>本文</p></div>');
+  const doc = dom.window.document;
+  const menu = doc.querySelector('.report-engine-dropdown[data-kind="list"]');
+  const list = menu.querySelector('.report-engine-dropdown-menu');
+  setCaret(dom, doc.querySelector('#report-content p').firstChild, 1);
+  menu.querySelector('button').click();
+  assert.strictEqual(list.hidden, false, 'クリックで開いていない');
+  list.querySelector('button[data-command="insert"]').click();
+  assert.strictEqual(list.hidden, true, '項目を選んだ後に閉じていない');
+  assert.strictEqual(doc.querySelectorAll('#report-content table').length, 1, '表が追加されていない');
+});
+
+test('一覧表の追加: 1行目がタイトル行の5列×(タイトル行+データ3行)の表がカーソル位置の段落の直後に入る', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>前</p><p>後</p></div>');
+  const doc = dom.window.document;
+  setCaret(dom, doc.querySelector('#report-content p').firstChild, 1);
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'insert'), true);
+  const table = doc.querySelector('#report-content table');
+  assert.deepStrictEqual(layout(table), [
+    'th th th th th',
+    'th td td td td',
+    'th td td td td',
+    'th td td td td'
+  ]);
+  assert.ok(table.classList.contains('report-table-list'), '一覧表のクラスが付いていない');
+  assert.strictEqual(table.previousElementSibling.textContent, '前');
+  assert.strictEqual(table.nextElementSibling.textContent, '後');
+  assert.strictEqual(dom.window.getSelection().anchorNode.closest('th'), table.rows[0].cells[0], 'カーソルが先頭セルに移っていない');
+  const { warnings } = dom.window.ReportEngine.containerToMarkdown(doc.getElementById('report-content'));
+  assert.strictEqual(warnings.length, 0, '追加した一覧表のMarkdown変換で警告が出た: ' + warnings.join(' / '));
+});
+
+test('単票の追加: 6列×3行で、奇数列がタイトルセル・偶数列がデータセルになる', async () => {
+  const dom = await makeEnv('<div id="report-content"><p>前</p></div>');
+  const doc = dom.window.document;
+  setCaret(dom, doc.querySelector('#report-content p').firstChild, 1);
+  dom.window.ReportEngine.runTableCommand('form', 'insert');
+  const table = doc.querySelector('#report-content table');
+  assert.deepStrictEqual(layout(table), [
+    'th td th td th td',
+    'th td th td th td',
+    'th td th td th td'
+  ]);
+  assert.ok(table.classList.contains('report-table-form'), '単票のクラスが付いていない');
+  assert.ok(table.nextElementSibling && table.nextElementSibling.tagName === 'P', '表の後ろに続きを書く段落が無い');
+});
+
+test('表の中にカーソルがあるときに表を追加すると、その表の直後に入る(入れ子にならない)', async () => {
+  const dom = await makeEnv(LIST3);
+  const doc = dom.window.document;
+  setCaret(dom, cellByText(dom, 'e').firstChild);
+  dom.window.ReportEngine.runTableCommand('form', 'insert');
+  const tables = doc.querySelectorAll('#report-content table');
+  assert.strictEqual(tables.length, 2);
+  assert.strictEqual(tables[1].parentNode.id, 'report-content', '表が入れ子になっている');
+  assert.strictEqual(tables[0].nextElementSibling, tables[1]);
+});
+
+test('一覧表の列追加: カーソルのある列の右に追加され、タイトル行はTH・他はTDになる', async () => {
+  const dom = await makeEnv(LIST3);
+  setCaret(dom, cellByText(dom, 'b').firstChild);
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'addColumn'), true);
+  assert.deepStrictEqual(layout(dom.window.document.querySelector('table')), [
+    'th:H1 th:H2 th th:H3',
+    'th:a td:b td td:c',
+    'th:d td:e td td:f'
+  ]);
+});
+
+test('一覧表の行追加: カーソルのある行の下に「先頭TH+残りTD」の行が追加される', async () => {
+  const dom = await makeEnv(LIST3);
+  setCaret(dom, cellByText(dom, 'b').firstChild);
+  dom.window.ReportEngine.runTableCommand('list', 'addRow');
+  assert.deepStrictEqual(layout(dom.window.document.querySelector('table')), [
+    'th:H1 th:H2 th:H3',
+    'th:a td:b td:c',
+    'th td td',
+    'th:d td:e td:f'
+  ]);
+});
+
+test('一覧表の列削除・行削除: カーソルのある列/行が消える', async () => {
+  const dom = await makeEnv(LIST3);
+  setCaret(dom, cellByText(dom, 'b').firstChild);
+  dom.window.ReportEngine.runTableCommand('list', 'deleteColumn');
+  assert.deepStrictEqual(layout(dom.window.document.querySelector('table')), [
+    'th:H1 th:H3', 'th:a td:c', 'th:d td:f'
+  ]);
+  setCaret(dom, cellByText(dom, 'f').firstChild);
+  dom.window.ReportEngine.runTableCommand('list', 'deleteRow');
+  assert.deepStrictEqual(layout(dom.window.document.querySelector('table')), ['th:H1 th:H3', 'th:a td:c']);
+});
+
+test('一覧表のタイトル行・最後の1列は削除できずメッセージが出る', async () => {
+  const dom = await makeEnv('<div id="report-content"><table><tr><th>H</th></tr><tr><th>a</th></tr></table></div>');
+  setCaret(dom, cellByText(dom, 'H').firstChild);
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'deleteRow'), false);
+  assert.ok(errorText(dom).includes('タイトル行は削除できません'), errorText(dom));
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'deleteColumn'), false);
+  assert.ok(errorText(dom).includes('最後の1列は削除できません'), errorText(dom));
+  assert.strictEqual(dom.window.document.querySelectorAll('tr').length, 2);
+});
+
+test('一覧表のセルの結合: ドラッグで選んだ範囲が1つのセルになり、中身は左上にまとまる', async () => {
+  const dom = await makeEnv(LIST3);
+  selectCells(dom, cellByText(dom, 'b'), cellByText(dom, 'f'));
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'merge'), true);
+  const table = dom.window.document.querySelector('table');
+  assert.deepStrictEqual(layout(table), ['th:H1 th:H2 th:H3', 'th:a td*2^2:bcef', 'th:d']);
+  assert.strictEqual(table.rows[1].cells[1].querySelectorAll('br').length, 3, '結合した中身が改行で区切られていない');
+});
+
+test('セルの結合は1セルだけ選んでいるとメッセージが出て何もしない', async () => {
+  const dom = await makeEnv(LIST3);
+  setCaret(dom, cellByText(dom, 'b').firstChild);
+  assert.strictEqual(dom.window.ReportEngine.runTableCommand('list', 'merge'), false);
+  assert.ok(errorText(dom).includes('2つ以上選択'), errorText(dom));
+});
+
+test('結合セルがある表でも列追加・行追加・行削除で位置がずれない', async () => {
+  const dom = await makeEnv(LIST3);
+  const RE = dom.window.ReportEngine;
+  selectCells(dom, cellByText(dom, 'b'), cellByText(dom, 'f'));
+  RE.runTableCommand('list', 'merge');
+  const table = dom.window.document.querySelector('table');
+
+  // 結合セルの中から列追加 → 結合セルの右(最後の列)に追加される
+  setCaret(dom, table.rows[1].cells[1].firstChild);
+  RE.runTableCommand('list', 'addColumn');
+  assert.deepStrictEqual(layout(table), ['th:H1 th:H2 th:H3 th', 'th:a td*2^2:bcef td', 'th:d td']);
+
+  // H2の列(結合セルの左半分)から列追加 → 結合セルをまたぐので結合が1列広がる
+  setCaret(dom, cellByText(dom, 'H2').firstChild);
+  RE.runTableCommand('list', 'addColumn');
+  assert.deepStrictEqual(layout(table), ['th:H1 th:H2 th th:H3 th', 'th:a td*3^2:bcef td', 'th:d td']);
+
+  // aの行から行追加 → 結合セルをまたぐので結合が1行伸びる
+  setCaret(dom, cellByText(dom, 'a').firstChild);
+  RE.runTableCommand('list', 'addRow');
+  assert.deepStrictEqual(layout(table), ['th:H1 th:H2 th th:H3 th', 'th:a td*3^3:bcef td', 'th td', 'th:d td']);
+
+  // 結合セルが始まる行を削除 → 結合セルは次の行に移って1行縮む
+  setCaret(dom, cellByText(dom, 'a').firstChild);
+  RE.runTableCommand('list', 'deleteRow');
+  assert.deepStrictEqual(layout(table), ['th:H1 th:H2 th th:H3 th', 'th td*3^2:bcef td', 'th:d td']);
+  const g = RE.buildTableGrid(table);
+  assert.ok(g.grid.every((row) => row.length === 5 && row.every(Boolean)), '格子に穴やずれがある');
+});
+
+test('単票の行追加: 上の行のTH/TDの並びを引き継いだ行が下に追加される', async () => {
+  const dom = await makeEnv(FORM2);
+  setCaret(dom, cellByText(dom, '山田').firstChild);
+  dom.window.ReportEngine.runTableCommand('form', 'addRow');
+  assert.deepStrictEqual(layout(dom.window.document.querySelector('table')), [
+    'th:氏名 td:山田 th:所属 td:営業',
+    'th td th td',
+    'th:日付 td:1/1 th:承認 td:佐藤'
+  ]);
+});
+
+test('単票の列追加・列削除: カーソルのある列の右にデータセルの列が入り、列削除で消える', async () => {
+  const dom = await makeEnv(FORM2);
+  const RE = dom.window.ReportEngine;
+  setCaret(dom, cellByText(dom, '山田').firstChild);
+  RE.runTableCommand('form', 'addColumn');
+  const table = dom.window.document.querySelector('table');
+  assert.deepStrictEqual(layout(table), [
+    'th:氏名 td:山田 td th:所属 td:営業',
+    'th:日付 td:1/1 td th:承認 td:佐藤'
+  ]);
+  setCaret(dom, cellByText(dom, '所属').firstChild);
+  RE.runTableCommand('form', 'deleteColumn');
+  assert.deepStrictEqual(layout(table), ['th:氏名 td:山田 td td:営業', 'th:日付 td:1/1 td td:佐藤']);
+});
+
+test('単票のタイトルセル/データセル切り替え: 選択したセルのTH/TDが変わり、中身とカーソル位置は保たれる', async () => {
+  const dom = await makeEnv(FORM2);
+  const RE = dom.window.ReportEngine;
+  const yamada = cellByText(dom, '山田').firstChild;
+  setCaret(dom, yamada, 1);
+  RE.runTableCommand('form', 'toTitle');
+  const table = dom.window.document.querySelector('table');
+  assert.deepStrictEqual(layout(table)[0], 'th:氏名 th:山田 th:所属 td:営業');
+  const sel = dom.window.getSelection();
+  assert.strictEqual(sel.anchorNode, yamada, 'カーソルが元のテキストに戻っていない');
+  assert.strictEqual(sel.anchorOffset, 1);
+
+  // 複数セルをドラッグで選択して一括でデータセルに
+  selectCells(dom, cellByText(dom, '日付'), cellByText(dom, '承認'));
+  RE.runTableCommand('form', 'toData');
+  assert.deepStrictEqual(layout(table)[1], 'td:日付 td:1/1 td:承認 td:佐藤');
+
+  // 行をまたいだ選択は、最初と最後のセルを対角とする長方形が対象(途中の行の左端は含まない)
+  selectCells(dom, cellByText(dom, '所属'), cellByText(dom, '1/1'));
+  RE.runTableCommand('form', 'toTitle');
+  assert.deepStrictEqual(layout(table), ['th:氏名 th:山田 th:所属 td:営業', 'td:日付 th:1/1 th:承認 td:佐藤']);
+});
+
+test('選択の終わりが隣のセルの先頭に接しているだけなら、そのセルは対象にしない', async () => {
+  const dom = await makeEnv(FORM2);
+  const a = cellByText(dom, '氏名');
+  const b = cellByText(dom, '山田');
+  const range = dom.window.document.createRange();
+  range.setStart(a.firstChild, 0);
+  range.setEnd(b, 0);
+  const sel = dom.window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  const cells = dom.window.ReportEngine.getSelectedCells(dom.window.document.getElementById('report-content'));
+  assert.strictEqual(cells.length, 1);
+  assert.strictEqual(cells[0], a);
+});
+
+test('メニューと表の種類が違う場合や、表の外にカーソルがある場合はメッセージを出して何もしない', async () => {
+  const dom = await makeEnv(FORM2.replace('</table></div>', '</table><p>外</p></div>'));
+  const RE = dom.window.ReportEngine;
+  const before = dom.window.document.querySelector('table').outerHTML;
+  setCaret(dom, cellByText(dom, '山田').firstChild);
+  assert.strictEqual(RE.runTableCommand('list', 'addRow'), false);
+  assert.ok(errorText(dom).includes('カーソル位置の表は単票です'), errorText(dom));
+
+  setCaret(dom, dom.window.document.querySelector('#report-content p').firstChild);
+  assert.strictEqual(RE.runTableCommand('form', 'addRow'), false);
+  assert.ok(errorText(dom).includes('表のセル内にカーソルを置いて'), errorText(dom));
+  assert.strictEqual(dom.window.document.querySelector('table').outerHTML, before, '表が変更されてしまった');
+});
+
+test('表の操作でも[未保存]になる', async () => {
+  const dom = await makeEnv(LIST3);
+  setCaret(dom, cellByText(dom, 'b').firstChild);
+  dom.window.ReportEngine.runTableCommand('list', 'addRow');
+  await flushMutations();
+  assert.strictEqual(statusText(dom), '[未保存]');
+});
+
+// ------------------------------------------------------------------
 (async () => {
   for (const { name, fn } of tests) {
     try {
