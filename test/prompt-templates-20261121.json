@@ -1,0 +1,17 @@
+{
+  "format": "fedget-templates",
+  "schemaVersion": 1,
+  "exportedAt": "2026-11-21T07:11:42.655Z",
+  "templates": [
+    {
+      "id": "31ed2600-bb6d-453e-b648-20621e6b3bdb",
+      "title": "test",
+      "summary": "",
+      "body": "次の内容を小学生にもわかるように説明せよ\n{{テーマ}}",
+      "tags": [],
+      "source": "local",
+      "createdAt": "2026-11-21T07:05:00.075Z",
+      "updatedAt": "2026-11-21T07:05:00.075Z"
+    }
+  ]
+}
